@@ -347,6 +347,10 @@ class DeadLetterEntry(Base):
     attempt_count: Mapped[int] = mapped_column(Integer, nullable=False)
     payload_snapshot: Mapped[dict] = mapped_column(JSON, default=dict)
     failed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    # Generated lazily (on first dashboard view of a dead-lettered job, not
+    # automatically for every failure) and cached here so repeat views don't
+    # re-call the AI summary service. See app/services/ai_summary.py.
+    ai_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     job: Mapped["Job"] = relationship(back_populates="dlq_entry")
 

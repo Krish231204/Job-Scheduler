@@ -32,7 +32,14 @@ services:
       - "8000:8000"
     environment:
       DATABASE_URL: postgresql+asyncpg://codity:codity@db:5432/codity
+      # ENVIRONMENT is intentionally left unset (defaults to "development")
+      # in this local/grading compose file, so this insecure default secret
+      # is accepted. app/main.py refuses to boot with this value if
+      # ENVIRONMENT=production is set -- that's what protects a real deploy.
       JWT_SECRET: change-me-in-production
+      # Optional -- enables real AI-generated dead-letter failure summaries.
+      # Unset by default (falls back to a rule-based summary, no key needed).
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
     depends_on:
       migrate:
         condition: service_completed_successfully

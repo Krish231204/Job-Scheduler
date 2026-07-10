@@ -218,6 +218,11 @@ class PaginatedJobs(BaseModel):
     page_size: int
 
 
+class AISummaryOut(BaseModel):
+    summary: str
+    cached: bool
+
+
 # --------------------------------------------------------------------------
 # Scheduled job definitions
 # --------------------------------------------------------------------------

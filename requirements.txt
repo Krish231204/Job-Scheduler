@@ -13,6 +13,7 @@ bcrypt==4.0.1
 python-multipart==0.0.9
 jinja2==3.1.4
 slowapi==0.1.9
+anthropic==0.40.0
 croniter==2.0.5
 python-dotenv==1.0.1
 pytest==8.3.3

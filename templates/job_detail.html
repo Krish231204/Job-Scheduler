@@ -24,8 +24,47 @@
     {% endif %}
 </div>
 
+{% if job.status.value == "dead_letter" %}
+<div class="card">
+    <h2>AI failure analysis</h2>
+    <p id="ai-summary-placeholder" class="muted">Get a plain-English summary of why this job likely failed.</p>
+    <p id="ai-summary-text" style="display:none"></p>
+    <button type="button" id="ai-summary-btn" onclick="getAiSummary()">Get AI summary</button>
+</div>
+<script>
+async function getAiSummary() {
+    const btn = document.getElementById("ai-summary-btn");
+    const placeholder = document.getElementById("ai-summary-placeholder");
+    const textEl = document.getElementById("ai-summary-text");
+    btn.disabled = true;
+    btn.textContent = "Generating...";
+    try {
+        const res = await fetch("/jobs/{{ job.id }}/ai-summary", { method: "POST", credentials: "include" });
+        const body = await res.json();
+        placeholder.style.display = "none";
+        textEl.style.display = "block";
+        if (!res.ok) {
+            textEl.textContent = (body.error && body.error.message) || "Failed to generate summary.";
+            btn.disabled = false;
+            btn.textContent = "Try again";
+        } else {
+            textEl.textContent = body.summary;
+            btn.style.display = "none"; // already shown -- no need to fetch the (identical, cached) result again
+        }
+    } catch (e) {
+        placeholder.style.display = "none";
+        textEl.style.display = "block";
+        textEl.textContent = "Network error: " + e.message;
+        btn.disabled = false;
+        btn.textContent = "Try again";
+    }
+}
+</script>
+{% endif %}
+
 <div class="card">
     <h2>Execution history</h2>
+    <div class="table-wrap">
     <table class="table">
         <thead><tr><th>Attempt</th><th>Status</th><th>Worker</th><th>Started</th><th>Duration</th><th>Error</th></tr></thead>
         <tbody>
@@ -43,6 +82,7 @@
         {% endfor %}
         </tbody>
     </table>
+    </div>
 </div>
 
 <div class="card">
