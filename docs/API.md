@@ -110,6 +110,11 @@ override the queue's default retry policy for that one job.
 `/login`, `/register`, `/dashboard`, `/dashboard/projects/{id}`,
 `/dashboard/queues/{id}`, `/dashboard/jobs/{id}`, `/dashboard/workers`.
 
+`ws://.../ws/queues/{queue_id}` (upgraded from `/dashboard/queues/{id}`)
+pushes a re-rendered stats + job-explorer HTML fragment every ~2 seconds
+for live updates -- auth via the same session cookie, same org-membership
+check as the HTTP page, re-verified on every push.
+
 ## Operations
 
 | Method | Path | Description |

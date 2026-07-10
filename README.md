@@ -105,7 +105,9 @@ curl -X POST localhost:8000/queues/1/jobs -H "Authorization: Bearer $TOKEN" -H "
 
 3. Watch it happen at `http://localhost:8000/dashboard` — queue health,
    job explorer (filterable by status), execution logs/retry history per
-   job, and worker status.
+   job, and worker status. The queue detail page updates live over a
+   WebSocket (stats + job explorer refresh in place, no page reload) —
+   everything else uses a periodic full-page refresh.
 
 Jobs run through the built-in demo handler (`worker/handlers.py`) unless you
 register a real one by name. The demo handler simulates work and can be told

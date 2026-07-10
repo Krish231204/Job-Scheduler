@@ -285,13 +285,57 @@ or down, so the extra read felt worth it.
 
 Per project scope, the dashboard is Jinja2 templates with small islands of
 inline `fetch()` for actions (pause/resume/retry/config updates) rather than
-a React/Vue SPA talking to a JSON API. "Live" updates use `<meta
-http-equiv="refresh">` on the queue/job/worker pages rather than WebSockets
-(the assignment lists WebSocket live updates as a bonus, not a core
-requirement). This is simpler to build, ship, and reason about at this
-project's scope, at the cost of a full-page reload every few seconds instead
-of a smooth in-place update -- acceptable for an internal ops dashboard,
-less so for something meant to feel like a real-time monitoring product.
+a React/Vue SPA talking to a JSON API. The dashboard home, project, worker,
+and job-detail pages still use `<meta http-equiv="refresh">` for staleness --
+simple, and their content changes slowly enough that a full-page reload
+every several seconds is unnoticeable. The queue detail page is the
+exception (see "WebSocket live updates" below): it's the page someone
+actually watches in real time while a job runs, so it earned the extra
+complexity that the others don't need yet.
+
+## WebSocket live updates (bonus feature) -- server-rendered fragments, not JSON
+
+`GET /ws/queues/{queue_id}` (wired into `templates/queue_detail.html`)
+replaces that page's old `<meta refresh>` with a real WebSocket: the server
+re-renders the stats grid + job explorer table
+(`templates/_queue_live_fragment.html`) every ~2 seconds and pushes the
+resulting HTML string; the client swaps `#live-region`'s `innerHTML` with
+it. Deliberately **not** JSON + client-side templating -- that would mean
+two implementations of "what a job row looks like" (Jinja2 for the initial
+page load, some JS templating for live updates) that could drift out of
+sync. Shipping rendered HTML keeps it to one.
+
+This was prompted by reviewing a peer's submission that implemented this
+same bonus feature using Socket.IO + a React SPA -- worth adopting the
+underlying idea (push, don't poll), not worth rewriting this dashboard as
+an SPA to get it, and notably their WebSocket channel had **no
+authentication at all** and broadcast every connected client the same
+global data regardless of org. This one requires the session cookie (sent
+automatically on the same-origin WebSocket handshake, decoded the same way
+`get_current_user_from_cookie` does for HTTP) and re-checks the caller's
+org membership against `queue_id` on every single tick, not just at
+connection time -- so revoking access mid-connection (e.g. removing a
+member from the org) takes effect on the next push, not just the next
+reconnect.
+
+`ws_queue_updates` takes `db: AsyncSession = Depends(get_db)` rather than
+opening a session directly, which matters for two reasons: it's what makes
+`app.dependency_overrides[get_db]` work in tests the same way it does for
+every HTTP route (an earlier version of this endpoint opened
+`AsyncSessionLocal()` manually per tick, which silently bypassed the test
+database entirely -- a test appeared to pass by coincidentally matching
+leftover IDs in the dev database, not by actually exercising the
+overridden test session), and one session for the connection's lifetime,
+committing after each tick's read, means the pooled connection is released
+between polls instead of held for the whole time. Only the no-cookie
+rejection path is covered by an automated test
+(`tests/test_ws_queue_updates.py`) -- testing the "does it actually push
+live content" behavior ran into a real limitation of `starlette.TestClient`
+(its WebSocket support drives the app through a background thread with its
+own event loop, which SQLAlchemy's loop-bound async engine doesn't tolerate
+well); that behavior was instead verified directly in a browser instead of
+worked around at the cost of real engineering time for a test-infra
+problem, not a product one.
 
 ## Auth: JWT for the API, the same JWT in an HttpOnly cookie for the dashboard
 
@@ -307,15 +351,18 @@ automatically.
 
 ## What's deliberately out of scope (bonus features not implemented)
 
-Workflow dependencies (job B waits on job A), rate limiting, distributed
-locking beyond `SKIP LOCKED`, queue sharding, WebSocket live updates, and
-AI-generated failure summaries are not implemented. Role-based access
-control has a partial foundation (`OrganizationMember.role`) but isn't
-enforced anywhere yet (every org member can do everything). These were cut
-to prioritize the core requirements and reliability characteristics the
-grading rubric weights most heavily (architecture, DB design, backend
-engineering, concurrency/reliability) rather than spreading effort across
-the bonus list.
+Of the assignment's bonus list, rate limiting, WebSocket live updates (queue
+detail page only -- see above), RBAC (queue-config actions require
+owner/admin -- see the hardening-pass section above), and AI-generated
+failure summaries are now implemented. Still out of scope: workflow
+dependencies (job B waits on job A), distributed locking beyond
+`SKIP LOCKED`, queue sharding, and a full RBAC permission matrix beyond
+queue-config actions (e.g. there's no endpoint to invite/manage org
+members, or to change another member's role). These were cut to prioritize
+the core requirements and reliability characteristics the grading rubric
+weights most heavily (architecture, DB design, backend engineering,
+concurrency/reliability) rather than spreading effort further across the
+remaining bonus list.
 
 ## Verification history
 
