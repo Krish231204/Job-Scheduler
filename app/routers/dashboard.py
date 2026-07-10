@@ -1,6 +1,8 @@
+import asyncio
+import contextlib
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, Form, Request, status
+from fastapi import APIRouter, Depends, Form, Request, WebSocket, WebSocketDisconnect, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import select
@@ -23,9 +25,11 @@ from app.models import (
     Worker,
 )
 from app.rate_limit import limiter
-from app.security import create_access_token, hash_password, verify_password
+from app.security import create_access_token, decode_token, hash_password, verify_password
 from app.services.stats import queue_health_series, queue_stats
 from app.web_auth import COOKIE_NAME, get_current_user_from_cookie, require_web_user
+
+WS_UPDATE_INTERVAL_SECONDS = 2.0
 
 router = APIRouter(tags=["dashboard"])
 templates = Jinja2Templates(directory="templates")
@@ -204,6 +208,93 @@ async def dashboard_queue(
             "is_queue_admin": is_queue_admin,
         },
     )
+
+
+@router.websocket("/ws/queues/{queue_id}")
+async def ws_queue_updates(
+    websocket: WebSocket,
+    queue_id: int,
+    db: AsyncSession = Depends(get_db),
+    status_filter: str | None = None,
+):
+    """Pushes a freshly-rendered stats + job-explorer HTML fragment
+    (templates/_queue_live_fragment.html) to the browser every couple
+    seconds, replacing the old <meta http-equiv="refresh"> full-page
+    reload. Renders server-side and ships HTML, not JSON, so there's one
+    rendering implementation (Jinja2) instead of duplicating row/badge
+    markup in JS -- consistent with this dashboard's existing
+    thin-JS-islands approach.
+
+    Takes `db` via Depends(get_db) rather than opening AsyncSessionLocal()
+    directly -- the same one session lives for the whole connection
+    (committing after each tick's read releases the pooled connection
+    between polls rather than holding it the whole time), and, just as
+    importantly, this is what makes app.dependency_overrides[get_db] work
+    in tests the same way it does for every HTTP route.
+
+    WebSocket connections can't set custom headers from browser JS, so
+    auth comes from the same-origin session cookie (sent automatically on
+    the handshake), decoded the same way get_current_user_from_cookie
+    does for HTTP requests -- this function can't reuse that dependency
+    directly since it's typed against Request, not WebSocket.
+    """
+    token = websocket.cookies.get(COOKIE_NAME)
+    if not token:
+        await websocket.close(code=4401)
+        return
+    try:
+        user_id = int(decode_token(token))
+    except Exception:
+        await websocket.close(code=4401)
+        return
+
+    if status_filter:
+        try:
+            JobStatus(status_filter)
+        except ValueError:
+            await websocket.close(code=4400)
+            return
+
+    await websocket.accept()
+    try:
+        while True:
+            result = await db.execute(
+                select(Queue)
+                .options(selectinload(Queue.retry_policy))
+                .join(Project, Project.id == Queue.project_id)
+                .join(Organization, Organization.id == Project.organization_id)
+                .join(OrganizationMember, OrganizationMember.organization_id == Organization.id)
+                .where(Queue.id == queue_id, OrganizationMember.user_id == user_id)
+            )
+            queue = result.scalar_one_or_none()
+            if queue is None:
+                await websocket.close(code=4404)
+                return
+
+            filters = [Job.queue_id == queue.id]
+            if status_filter:
+                filters.append(Job.status == JobStatus(status_filter))
+            jobs_result = await db.execute(
+                select(Job).where(*filters).order_by(Job.created_at.desc()).limit(100)
+            )
+            jobs = list(jobs_result.scalars().all())
+            stats = await queue_stats(db, queue.id)
+            await db.commit()  # release the pooled connection between polls
+
+            html = templates.get_template("_queue_live_fragment.html").render(
+                queue=queue,
+                jobs=jobs,
+                stats=stats,
+                statuses=list(JobStatus),
+                status_filter=status_filter,
+            )
+            await websocket.send_text(html)
+            await asyncio.sleep(WS_UPDATE_INTERVAL_SECONDS)
+    except WebSocketDisconnect:
+        pass
+    finally:
+        with contextlib.suppress(Exception):
+            await websocket.close()
 
 
 @router.get("/dashboard/jobs/{job_id}", response_class=HTMLResponse)

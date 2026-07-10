@@ -1,18 +1,11 @@
 {% extends "base.html" %}
 {% block title %}Queue: {{ queue.name }}{% endblock %}
-{% block refresh %}<meta http-equiv="refresh" content="10">{% endblock %}
 {% block content %}
 <a class="breadcrumb" href="/dashboard/projects/{{ queue.project_id }}">&larr; <span>Back to project</span></a>
 <h1>Queue: {{ queue.name }} {% if queue.is_paused %}<span class="badge status-offline">paused</span>{% endif %}</h1>
 
-<div class="grid stats-grid">
-    <div class="card stat"><span class="stat-value">{{ stats.queued + stats.scheduled }}</span><span class="stat-label">Queued</span></div>
-    <div class="card stat"><span class="stat-value">{{ stats.claimed + stats.running }}</span><span class="stat-label">In flight</span></div>
-    <div class="card stat"><span class="stat-value">{{ stats.completed }}</span><span class="stat-label">Completed</span></div>
-    <div class="card stat"><span class="stat-value">{{ stats.failed }}</span><span class="stat-label">Failed/Retrying</span></div>
-    <div class="card stat"><span class="stat-value">{{ stats.dead_letter }}</span><span class="stat-label">Dead letter</span></div>
-    <div class="card stat"><span class="stat-value">{{ stats.throughput_last_hour }}</span><span class="stat-label">Completed/hr</span></div>
-    <div class="card stat"><span class="stat-value">{{ (stats.avg_duration_ms or 0) | round(0) }}ms</span><span class="stat-label">Avg duration</span></div>
+<div id="live-region">
+{% include "_queue_live_fragment.html" %}
 </div>
 
 <div class="card">
@@ -119,40 +112,6 @@
     </form>
 </div>
 
-<div class="card">
-    <h2>Job explorer</h2>
-    <div class="filter-bar">
-        <a href="/dashboard/queues/{{ queue.id }}" class="{{ 'active' if not status_filter }}">All</a>
-        {% for s in statuses %}
-        <a href="/dashboard/queues/{{ queue.id }}?status_filter={{ s.value }}" class="{{ 'active' if status_filter == s.value }}">{{ s.value }}</a>
-        {% endfor %}
-    </div>
-    <div class="table-wrap">
-    <table class="table">
-        <thead><tr><th>ID</th><th>Name</th><th>Type</th><th>Status</th><th>Attempts</th><th>Run at</th><th></th></tr></thead>
-        <tbody>
-        {% for j in jobs %}
-            <tr>
-                <td><a href="/dashboard/jobs/{{ j.id }}">#{{ j.id }}</a></td>
-                <td>{{ j.name }}</td>
-                <td>{{ j.job_type.value }}</td>
-                <td><span class="badge status-{{ j.status.value }}">{{ j.status.value }}</span></td>
-                <td>{{ j.attempt_count }}</td>
-                <td>{{ j.run_at }}</td>
-                <td>
-                    {% if j.status.value in ["dead_letter", "failed", "cancelled"] %}
-                    <button type="button" onclick="postAndReload('/jobs/{{ j.id }}/retry')">Retry</button>
-                    {% endif %}
-                </td>
-            </tr>
-        {% else %}
-            <tr><td colspan="7" class="muted">No jobs match this filter.</td></tr>
-        {% endfor %}
-        </tbody>
-    </table>
-    </div>
-</div>
-
 <script>
 function sendPatch(evt, form) {
     evt.preventDefault();
@@ -186,6 +145,56 @@ function togglePause() {
 function postAndReload(url) {
     fetch(url, { method: "POST", credentials: "include" }).then(() => window.location.reload());
 }
+
+// postJob (no reload) is used from inside #live-region, which the
+// WebSocket below re-renders on its own every couple seconds anyway --
+// reloading the whole page on click would just fight with that.
+function postJob(url) {
+    fetch(url, { method: "POST", credentials: "include" });
+}
+
+// ---------------------------------------------------------------------
+// Live updates: the server re-renders the stats + job explorer fragment
+// (templates/_queue_live_fragment.html) and pushes the resulting HTML
+// over a WebSocket every couple seconds; the client just swaps
+// #live-region's innerHTML in place. Deliberately not sending JSON and
+// re-implementing the same row/badge markup in JS -- one rendering
+// implementation (Jinja2, server-side), consistent with the rest of this
+// dashboard's "thin JS islands" approach (see docs/DESIGN_DECISIONS.md).
+// ---------------------------------------------------------------------
+
+(function connectLiveUpdates() {
+    const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+    const qs = {{ (('?status_filter=' + status_filter) if status_filter else '') | tojson }};
+    const url = `${proto}//${window.location.host}/ws/queues/{{ queue.id }}${qs}`;
+    const liveIndicator = () => document.getElementById("live-indicator");
+
+    function showLiveIndicator() {
+        const el = liveIndicator();
+        if (el) el.style.display = "inline-block";
+    }
+
+    function connect() {
+        const ws = new WebSocket(url);
+        ws.onopen = showLiveIndicator;
+        ws.onmessage = (event) => {
+            // The fragment being swapped in contains its own #live-indicator
+            // (hidden by default, for the very first server-rendered page
+            // load before any socket has connected) -- re-show it after
+            // every swap, not just once on open, or it reverts to hidden
+            // each time this replaces the node that onopen made visible.
+            document.getElementById("live-region").innerHTML = event.data;
+            showLiveIndicator();
+        };
+        ws.onclose = () => {
+            // Reconnect with backoff rather than leaving the page silently
+            // stale forever (e.g. after the server restarts/redeploys).
+            setTimeout(connect, 3000);
+        };
+        ws.onerror = () => ws.close();
+    }
+    connect();
+})();
 
 // ---------------------------------------------------------------------
 // "Submit a job" form: a friendly field-by-field builder by default,
