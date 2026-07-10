@@ -1,15 +1,16 @@
 import logging
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
 
 from app.database import get_db
-from app.deps import get_queue_for_user
-from app.models import Job, JobStatus, JobType, Queue, ScheduledJob
+from app.deps import get_job_for_user, get_queue_for_user, get_scheduled_job_for_user
+from app.models import DeadLetterEntry, Job, JobStatus, JobType, Queue, ScheduledJob
+from app.rate_limit import limiter
 from app.schemas import (
+    AISummaryOut,
     JobCreate,
     JobDetailOut,
     JobOut,
@@ -17,6 +18,7 @@ from app.schemas import (
     ScheduledJobCreate,
     ScheduledJobOut,
 )
+from app.services.ai_summary import summarize_failure
 from app.services.job_service import compute_initial_next_run, create_batch, create_job
 
 logger = logging.getLogger("codity.api.jobs")
@@ -24,7 +26,9 @@ router = APIRouter(tags=["jobs"])
 
 
 @router.post("/queues/{queue_id}/jobs", response_model=JobOut, status_code=status.HTTP_201_CREATED)
+@limiter.limit("60/minute")
 async def submit_job(
+    request: Request,
     payload: JobCreate,
     db: AsyncSession = Depends(get_db),
     queue: Queue = Depends(get_queue_for_user),
@@ -102,22 +106,13 @@ async def list_jobs(
 
 
 @router.get("/jobs/{job_id}", response_model=JobDetailOut)
-async def get_job(job_id: int, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(
-        select(Job).options(selectinload(Job.executions), selectinload(Job.logs)).where(Job.id == job_id)
-    )
-    job = result.scalar_one_or_none()
-    if job is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
+async def get_job(job: Job = Depends(get_job_for_user)):
     return job
 
 
 @router.post("/jobs/{job_id}/retry", response_model=JobOut)
-async def retry_job(job_id: int, db: AsyncSession = Depends(get_db)):
+async def retry_job(db: AsyncSession = Depends(get_db), job: Job = Depends(get_job_for_user)):
     """Manually requeue a failed / dead-lettered job (e.g. from the dashboard)."""
-    job = await db.get(Job, job_id)
-    if job is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
     if job.status not in (JobStatus.DEAD_LETTER, JobStatus.FAILED, JobStatus.CANCELLED):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Cannot retry job in status {job.status}")
     previous_status = job.status
@@ -132,10 +127,7 @@ async def retry_job(job_id: int, db: AsyncSession = Depends(get_db)):
 
 
 @router.post("/jobs/{job_id}/cancel", response_model=JobOut)
-async def cancel_job(job_id: int, db: AsyncSession = Depends(get_db)):
-    job = await db.get(Job, job_id)
-    if job is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
+async def cancel_job(db: AsyncSession = Depends(get_db), job: Job = Depends(get_job_for_user)):
     if job.status in (JobStatus.RUNNING, JobStatus.COMPLETED):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Cannot cancel job in status {job.status}")
     job.status = JobStatus.CANCELLED
@@ -143,6 +135,31 @@ async def cancel_job(job_id: int, db: AsyncSession = Depends(get_db)):
     await db.refresh(job)
     logger.info("Job cancelled id=%s", job.id)
     return job
+
+
+@router.post("/jobs/{job_id}/ai-summary", response_model=AISummaryOut)
+async def get_ai_failure_summary(db: AsyncSession = Depends(get_db), job: Job = Depends(get_job_for_user)):
+    """Generates (or returns the cached) plain-English failure summary for a
+    dead-lettered job. Generated lazily on request rather than automatically
+    for every failure, and cached on the DLQ entry, so this never fires more
+    AI calls than a human actually asked to see."""
+    if job.status != JobStatus.DEAD_LETTER:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="AI summaries are only available for dead-lettered jobs")
+
+    result = await db.execute(select(DeadLetterEntry).where(DeadLetterEntry.job_id == job.id))
+    dlq_entry = result.scalar_one_or_none()
+    if dlq_entry is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No dead-letter entry found for this job")
+
+    if dlq_entry.ai_summary:
+        return AISummaryOut(summary=dlq_entry.ai_summary, cached=True)
+
+    errors = [e.error for e in job.executions if e.error]
+    summary = await summarize_failure(job.name, job.attempt_count, errors)
+    dlq_entry.ai_summary = summary
+    await db.commit()
+    logger.info("AI failure summary generated for job id=%s", job.id)
+    return AISummaryOut(summary=summary, cached=False)
 
 
 # --------------------------------------------------------------------------
@@ -183,10 +200,7 @@ async def list_scheduled_jobs(db: AsyncSession = Depends(get_db), queue: Queue =
 
 
 @router.post("/scheduled-jobs/{scheduled_job_id}/pause", response_model=ScheduledJobOut)
-async def pause_scheduled_job(scheduled_job_id: int, db: AsyncSession = Depends(get_db)):
-    sj = await db.get(ScheduledJob, scheduled_job_id)
-    if sj is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Scheduled job not found")
+async def pause_scheduled_job(db: AsyncSession = Depends(get_db), sj: ScheduledJob = Depends(get_scheduled_job_for_user)):
     sj.is_active = False
     await db.commit()
     await db.refresh(sj)
@@ -195,10 +209,7 @@ async def pause_scheduled_job(scheduled_job_id: int, db: AsyncSession = Depends(
 
 
 @router.post("/scheduled-jobs/{scheduled_job_id}/resume", response_model=ScheduledJobOut)
-async def resume_scheduled_job(scheduled_job_id: int, db: AsyncSession = Depends(get_db)):
-    sj = await db.get(ScheduledJob, scheduled_job_id)
-    if sj is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Scheduled job not found")
+async def resume_scheduled_job(db: AsyncSession = Depends(get_db), sj: ScheduledJob = Depends(get_scheduled_job_for_user)):
     sj.is_active = True
     if sj.next_run_at is None or sj.next_run_at < datetime.now(timezone.utc):
         sj.next_run_at = compute_initial_next_run(sj.cron_expression, sj.run_at, sj.is_recurring)
