@@ -1,0 +1,93 @@
+# Architecture
+
+## Components
+
+```mermaid
+flowchart LR
+    subgraph Clients
+        Browser["Dashboard (browser)"]
+        API_Client["API client / script"]
+    end
+
+    subgraph "Codity API process (FastAPI, N replicas, stateless)"
+        REST["REST routers\nauth / orgs / projects / queues / jobs"]
+        Dash["Dashboard routers\n(Jinja2 server-rendered)"]
+    end
+
+    subgraph "Worker processes (M replicas, horizontally scalable)"
+        W1["Worker 1\npoll -> claim -> execute -> heartbeat"]
+        W2["Worker 2"]
+        Wn["Worker N"]
+    end
+
+    Scheduler["Scheduler process (single instance)\ncron/delay promotion, stale-worker recovery"]
+
+    DB[("PostgreSQL\nqueues, jobs, executions, logs, workers, DLQ")]
+
+    Browser --> Dash
+    API_Client --> REST
+    Dash --> DB
+    REST --> DB
+    W1 -- "SELECT ... FOR UPDATE SKIP LOCKED" --> DB
+    W2 -- "SELECT ... FOR UPDATE SKIP LOCKED" --> DB
+    Wn -- "SELECT ... FOR UPDATE SKIP LOCKED" --> DB
+    Scheduler --> DB
+```
+
+## Why three process types
+
+- **API process** is stateless and horizontally scalable behind a load
+  balancer; it only ever reads/writes Postgres, never talks to workers
+  directly. This keeps the system's only shared state in one place, which
+  is what makes atomic claiming possible in the first place.
+- **Worker processes** are the thing you scale to increase throughput. Each
+  is a single Python process running an asyncio loop; add more processes
+  (or more machines) to add capacity. They talk to Postgres directly using
+  the same SQLAlchemy models as the API (see `docs/DESIGN_DECISIONS.md` for
+  why that's a deliberate choice, not an accident).
+- **Scheduler** is a single lightweight loop most of the time doing nothing:
+  it promotes due `ScheduledJob` definitions into concrete `Job` rows,
+  promotes jobs whose retry backoff has elapsed from `RETRYING` back to
+  `QUEUED`, and detects workers that have stopped sending heartbeats
+  (crash/network partition) and requeues whatever they had claimed. None of
+  this is performance-critical, so one instance is enough; if you need HA
+  for it, run two behind a Postgres advisory lock (all of its writes are
+  already idempotent/guarded with `SKIP LOCKED`, so a brief overlap during
+  failover is harmless, just redundant work).
+
+## Job flow (immediate job, happy path)
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant API
+    participant DB as Postgres
+    participant Worker
+
+    Client->>API: POST /queues/1/jobs {job_type: immediate}
+    API->>DB: INSERT Job(status=QUEUED, run_at=now)
+    API-->>Client: 201 Job
+
+    loop every poll_interval
+        Worker->>DB: SELECT ... WHERE status IN (QUEUED,SCHEDULED)\nAND run_at <= now FOR UPDATE SKIP LOCKED
+        DB-->>Worker: locked, unclaimed rows only
+        Worker->>DB: UPDATE status=CLAIMED, claimed_by=worker_id
+    end
+    Worker->>DB: UPDATE status=RUNNING, INSERT JobExecution
+    Worker->>Worker: run handler(payload)
+    alt success
+        Worker->>DB: UPDATE status=COMPLETED, execution.status=succeeded
+    else failure
+        Worker->>DB: compute backoff; UPDATE status=RETRYING or DEAD_LETTER
+    end
+```
+
+## Failure recovery
+
+If a worker crashes mid-job, the DB still shows that job as `CLAIMED` or
+`RUNNING` and its heartbeats stop arriving. The scheduler's stale-worker
+sweep (`detect_stale_workers`, run every tick) marks the worker `OFFLINE` and
+requeues every job it held back to `QUEUED`, so no job is silently lost --
+the trade-off is that a crashed-but-still-executing job's side effects could
+run twice, which is why job handlers should be idempotent (see
+`idempotency_key` on `Job`, and `docs/DESIGN_DECISIONS.md`).

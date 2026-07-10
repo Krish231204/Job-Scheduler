@@ -1,0 +1,75 @@
+"""Test fixtures.
+
+Most tests here need a real Postgres (SELECT ... FOR UPDATE SKIP LOCKED,
+the concurrency behavior we're specifically testing, isn't meaningfully
+exercised by SQLite). Point TEST_DATABASE_URL at a throwaway database, e.g.
+via `docker compose up -d db` and:
+
+    export TEST_DATABASE_URL=postgresql+asyncpg://codity:codity@localhost:5432/codity_test
+
+Tests are skipped automatically if no test database is reachable, so
+`pytest` still runs cleanly (skipping the DB-backed tests) in environments
+without Postgres available -- e.g. plain retry/cron math tests still run.
+"""
+import asyncio
+import os
+
+import pytest
+import pytest_asyncio
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+from app.database import Base
+
+TEST_DATABASE_URL = os.environ.get(
+    "TEST_DATABASE_URL", "postgresql+asyncpg://codity:codity@localhost:5432/codity_test"
+)
+
+
+def _db_available() -> bool:
+    async def _check():
+        engine = create_async_engine(TEST_DATABASE_URL)
+        try:
+            async with engine.connect():
+                return True
+        except Exception:
+            return False
+        finally:
+            await engine.dispose()
+
+    try:
+        return asyncio.run(_check())
+    except Exception:
+        return False
+
+
+requires_db = pytest.mark.skipif(not _db_available(), reason="TEST_DATABASE_URL is not reachable")
+
+
+@pytest_asyncio.fixture
+async def engine():
+    eng = create_async_engine(TEST_DATABASE_URL)
+    async with eng.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    yield eng
+    async with eng.begin() as conn:
+        await conn.run_sync(Base.metadata.drop_all)
+    await eng.dispose()
+
+
+@pytest_asyncio.fixture
+async def db_session(engine):
+    """A session bound to a transaction that's rolled back after the test,
+    so each test starts from a clean slate without recreating the schema.
+    """
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with session_factory() as session:
+        yield session
+        await session.rollback()
+
+
+@pytest_asyncio.fixture
+async def session_factory(engine):
+    """Raw sessionmaker for tests that need multiple independent, truly
+    committed sessions (e.g. the concurrent-claim test).
+    """
+    return async_sessionmaker(engine, expire_on_commit=False)

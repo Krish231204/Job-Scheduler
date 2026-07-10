@@ -1,0 +1,197 @@
+:root {
+    /* Light SaaS palette */
+    --bg: #f7f9fc;
+    --panel: #ffffff;
+    --panel-inset: #f4f7fb;
+    --border: #e2e5ea;
+    --text: #0b2447;
+    --muted: #6b7686;
+    --accent: #1c5cd7;
+    --ok: #0f7a3f;
+    --ok-bg: #eafaf0;
+    --warn: #a65c00;
+    --warn-bg: #fff4e0;
+    --err: #c62d2d;
+    --err-bg: #fdeceb;
+    --btn-primary: #1c5cd7;
+    --btn-primary-hover: #164db3;
+}
+
+* { box-sizing: border-box; }
+
+body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+.topbar {
+    display: flex;
+    align-items: center;
+    gap: 24px;
+    padding: 14px 28px;
+    border-bottom: 1px solid var(--border);
+    background: var(--panel);
+}
+.topbar .brand { font-weight: 700; font-size: 1.2rem; color: var(--text); }
+.topbar nav { display: flex; gap: 4px; flex: 1; }
+.topbar nav a {
+    padding: 6px 12px;
+    border-radius: 6px;
+    transition: background-color .15s ease;
+}
+.topbar nav a:hover { background: rgba(11,36,71,0.05); text-decoration: none; }
+.logout-form { display: flex; align-items: center; gap: 10px; }
+
+.breadcrumb {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    margin-bottom: 8px;
+    font-size: 0.9rem;
+}
+.breadcrumb:hover { text-decoration: none; }
+.breadcrumb:hover span { text-decoration: underline; }
+
+.container { max-width: 1100px; margin: 0 auto; padding: 28px; }
+
+h1 { margin-top: 0; }
+
+.card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px;
+    margin-bottom: 20px;
+}
+
+.link-card {
+    display: block;
+    transition: border-color .15s ease, transform .15s ease, box-shadow .15s ease;
+}
+.link-card:hover {
+    border-color: var(--accent);
+    text-decoration: none;
+    transform: translateY(-2px);
+    box-shadow: 0 6px 16px rgba(11,36,71,0.1);
+}
+
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 16px; margin-bottom: 24px; }
+
+.stats-grid .stat { text-align: center; }
+.stats-grid .stat { background: var(--panel-inset); }
+.stat-value { display: block; font-size: 1.8rem; font-weight: 700; }
+.stat-label { color: var(--muted); font-size: 0.85rem; }
+
+.table { width: 100%; border-collapse: collapse; }
+.table th, .table td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); }
+.table th { color: var(--muted); font-weight: 600; font-size: 0.85rem; text-transform: uppercase; }
+.table tbody tr { transition: background-color .1s ease; }
+.table tbody tr:hover { background: rgba(11,36,71,0.03); }
+.clickable-row { cursor: pointer; }
+.clickable-row:hover { background: rgba(28,92,215,0.06); }
+
+.kv th { color: var(--muted); text-align: left; padding: 6px 12px 6px 0; vertical-align: top; }
+.kv td { padding: 6px 0; }
+
+.badge {
+    display: inline-block;
+    padding: 2px 10px;
+    border-radius: 999px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    background: var(--panel-inset);
+    color: var(--muted);
+}
+.status-completed, .status-succeeded, .status-online { background: var(--ok-bg); color: var(--ok); }
+.status-failed, .status-dead_letter, .status-offline { background: var(--err-bg); color: var(--err); }
+.status-running, .status-claimed, .status-draining { background: var(--warn-bg); color: var(--warn); }
+.status-queued, .status-scheduled, .status-retrying, .status-cancelled { background: var(--panel-inset); color: var(--muted); }
+
+.filter-bar { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 14px; }
+.filter-bar a {
+    padding: 4px 10px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    font-size: 0.85rem;
+    color: var(--muted);
+    transition: background-color .12s ease, border-color .12s ease, color .12s ease;
+}
+.filter-bar a:hover { text-decoration: none; border-color: var(--accent); color: var(--accent); background: rgba(28,92,215,0.06); }
+.filter-bar a.active { background: var(--accent); color: #ffffff; border-color: var(--accent); }
+.filter-bar a.active:hover { background: var(--btn-primary-hover); color: #ffffff; }
+
+.log-list { list-style: none; padding: 0; margin: 0; font-family: ui-monospace, monospace; font-size: 0.85rem; }
+.log-list li { padding: 4px 0; border-bottom: 1px solid var(--border); }
+.log-error { color: var(--err); }
+.log-warning { color: var(--warn); }
+
+form label { display: block; margin-bottom: 10px; font-size: 0.9rem; color: var(--muted); }
+form input, form select, form textarea {
+    display: block;
+    width: 100%;
+    margin-top: 4px;
+    padding: 8px 10px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--panel-inset);
+    color: var(--text);
+    font-family: inherit;
+    transition: border-color .12s ease;
+}
+form input:focus, form select:focus, form textarea:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px rgba(28,92,215,0.18);
+}
+form input[type="checkbox"] { display: inline-block; width: auto; margin-top: 0; }
+
+button {
+    padding: 8px 16px;
+    border-radius: 6px;
+    border: 1px solid var(--btn-primary);
+    background: var(--btn-primary);
+    color: #ffffff;
+    font-weight: 600;
+    cursor: pointer;
+    margin-right: 8px;
+    transition: background-color .12s ease, box-shadow .12s ease, transform .05s ease;
+}
+/* Buttons should look pressable: a clear lift-and-glow on hover, a visible
+   "pressed" squash on click, and a focus ring for keyboard users -- not just
+   a flat block of color that's hard to tell apart from a static badge. */
+button:hover {
+    background: var(--btn-primary-hover);
+    box-shadow: 0 2px 10px rgba(28,92,215,0.35);
+}
+button:active { transform: translateY(1px) scale(0.98); box-shadow: none; }
+button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+button:disabled {
+    background: var(--border);
+    border-color: var(--border);
+    color: var(--muted);
+    cursor: not-allowed;
+    box-shadow: none;
+}
+
+/* Secondary (less prominent) actions -- e.g. "Pause queue" next to "Save" --
+   use `class="button-secondary"` so the primary action still stands out. */
+button.button-secondary {
+    background: transparent;
+    color: var(--text);
+    border-color: var(--border);
+}
+button.button-secondary:hover {
+    background: rgba(11,36,71,0.04);
+    border-color: var(--muted);
+    box-shadow: none;
+}
+
+.muted { color: var(--muted); }
+.error { color: var(--err); }
+
+.auth-card { max-width: 380px; margin: 60px auto; }

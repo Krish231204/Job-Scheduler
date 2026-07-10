@@ -1,0 +1,337 @@
+{% extends "base.html" %}
+{% block title %}Queue: {{ queue.name }}{% endblock %}
+{% block refresh %}<meta http-equiv="refresh" content="10">{% endblock %}
+{% block content %}
+<a class="breadcrumb" href="/dashboard/projects/{{ queue.project_id }}">&larr; <span>Back to project</span></a>
+<h1>Queue: {{ queue.name }} {% if queue.is_paused %}<span class="badge status-offline">paused</span>{% endif %}</h1>
+
+<div class="grid stats-grid">
+    <div class="card stat"><span class="stat-value">{{ stats.queued + stats.scheduled }}</span><span class="stat-label">Queued</span></div>
+    <div class="card stat"><span class="stat-value">{{ stats.claimed + stats.running }}</span><span class="stat-label">In flight</span></div>
+    <div class="card stat"><span class="stat-value">{{ stats.completed }}</span><span class="stat-label">Completed</span></div>
+    <div class="card stat"><span class="stat-value">{{ stats.failed }}</span><span class="stat-label">Failed/Retrying</span></div>
+    <div class="card stat"><span class="stat-value">{{ stats.dead_letter }}</span><span class="stat-label">Dead letter</span></div>
+    <div class="card stat"><span class="stat-value">{{ stats.throughput_last_hour }}</span><span class="stat-label">Completed/hr</span></div>
+    <div class="card stat"><span class="stat-value">{{ (stats.avg_duration_ms or 0) | round(0) }}ms</span><span class="stat-label">Avg duration</span></div>
+</div>
+
+<div class="card">
+    <h2>Throughput &amp; health (last 24h)</h2>
+    <canvas id="healthChart" height="80"></canvas>
+</div>
+
+<div class="card">
+    <h2>Queue configuration</h2>
+    <form method="post" action="/queues/{{ queue.id }}" onsubmit="return sendPatch(event, this)">
+        <label>Priority <input type="number" name="priority" value="{{ queue.priority }}"></label>
+        <label>Max concurrency <input type="number" name="max_concurrency" value="{{ queue.max_concurrency }}"></label>
+        {% if queue.retry_policy %}
+        <label>Retry strategy
+            <select name="strategy">
+                {% for s in ["fixed", "linear", "exponential"] %}
+                <option value="{{ s }}" {% if queue.retry_policy.strategy.value == s %}selected{% endif %}>{{ s }}</option>
+                {% endfor %}
+            </select>
+        </label>
+        <label>Max retries <input type="number" name="max_retries" value="{{ queue.retry_policy.max_retries }}"></label>
+        <label>Base delay (s) <input type="number" step="0.1" name="base_delay_seconds" value="{{ queue.retry_policy.base_delay_seconds }}"></label>
+        {% endif %}
+        <button type="submit">Save</button>
+        <button type="button" class="button-secondary" onclick="togglePause()">{{ "Resume queue" if queue.is_paused else "Pause queue" }}</button>
+    </form>
+</div>
+
+<div class="card">
+    <h2>Scheduled / recurring jobs</h2>
+    <table class="table">
+        <thead><tr><th>Name</th><th>Job</th><th>Cron</th><th>Next run</th><th>Active</th></tr></thead>
+        <tbody>
+        {% for sj in scheduled_jobs %}
+            <tr>
+                <td>{{ sj.name }}</td><td>{{ sj.job_name }}</td>
+                <td>{{ sj.cron_expression or "one-off" }}</td>
+                <td>{{ sj.next_run_at }}</td>
+                <td>{{ "Yes" if sj.is_active else "No" }}</td>
+            </tr>
+        {% else %}
+            <tr><td colspan="5" class="muted">No scheduled jobs.</td></tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+<div class="card">
+    <h2>Submit a job</h2>
+    <p class="muted" style="margin-top:-8px">Fill in the fields below -- no JSON required. Prefer to write the payload yourself? Flip "Advanced" at the bottom.</p>
+
+    <form id="jobForm" onsubmit="return submitJobForm(event)">
+        <label>Name <input type="text" id="jf-name" required placeholder="e.g. send-welcome-email"></label>
+
+        <label>Type
+            <select id="jf-type" onchange="onJobTypeChange()">
+                <option value="immediate">Immediate -- run as soon as a worker is free</option>
+                <option value="delayed">Delayed -- run after waiting a bit</option>
+                <option value="scheduled">Scheduled -- run once at a specific time</option>
+                <option value="recurring">Recurring -- run repeatedly on a cron schedule</option>
+                <option value="batch">Batch -- create several jobs at once</option>
+            </select>
+        </label>
+
+        <div id="jf-delay" style="display:none">
+            <label>Run after (seconds) <input type="number" id="jf-delaySeconds" value="30" min="0"></label>
+        </div>
+        <div id="jf-scheduled" style="display:none">
+            <label>Run at <input type="datetime-local" id="jf-runAt"></label>
+        </div>
+        <div id="jf-recurring" style="display:none">
+            <label>Cron expression <input type="text" id="jf-cron" placeholder="e.g. 0 2 * * * (2am daily)"></label>
+            <p class="muted" style="margin-top:-6px">Standard 5-field cron: minute hour day-of-month month day-of-week.</p>
+        </div>
+        <div id="jf-batch" style="display:none">
+            <label>Number of items <input type="number" id="jf-batchCount" value="3" min="2" max="100"></label>
+            <p class="muted" style="margin-top:-6px">Each item gets the payload fields below, plus its own <code>index</code>.</p>
+        </div>
+
+        <label>Priority <input type="number" id="jf-priority" placeholder="optional -- higher runs first within this queue"></label>
+
+        <label style="display:flex; align-items:center; gap:8px; flex-direction:row;">
+            <input type="checkbox" id="jf-advanced" style="width:auto; margin:0;" onchange="toggleAdvancedPayload()">
+            <span>Advanced: write the payload as raw JSON instead</span>
+        </label>
+
+        <div id="jf-simplePayload">
+            <label>Payload fields</label>
+            <div id="jf-payloadRows"></div>
+            <button type="button" class="button-secondary" onclick="addPayloadRow()">+ Add field</button>
+        </div>
+        <div id="jf-rawPayload" style="display:none">
+            <label>Payload (JSON) <textarea id="jf-rawJson" rows="4" placeholder="{}"></textarea></label>
+        </div>
+
+        <p id="jf-error" class="error" style="display:none"></p>
+        <button type="submit">Submit job</button>
+    </form>
+</div>
+
+<div class="card">
+    <h2>Job explorer</h2>
+    <div class="filter-bar">
+        <a href="/dashboard/queues/{{ queue.id }}" class="{{ 'active' if not status_filter }}">All</a>
+        {% for s in statuses %}
+        <a href="/dashboard/queues/{{ queue.id }}?status_filter={{ s.value }}" class="{{ 'active' if status_filter == s.value }}">{{ s.value }}</a>
+        {% endfor %}
+    </div>
+    <table class="table">
+        <thead><tr><th>ID</th><th>Name</th><th>Type</th><th>Status</th><th>Attempts</th><th>Run at</th><th></th></tr></thead>
+        <tbody>
+        {% for j in jobs %}
+            <tr>
+                <td><a href="/dashboard/jobs/{{ j.id }}">#{{ j.id }}</a></td>
+                <td>{{ j.name }}</td>
+                <td>{{ j.job_type.value }}</td>
+                <td><span class="badge status-{{ j.status.value }}">{{ j.status.value }}</span></td>
+                <td>{{ j.attempt_count }}</td>
+                <td>{{ j.run_at }}</td>
+                <td>
+                    {% if j.status.value in ["dead_letter", "failed", "cancelled"] %}
+                    <button type="button" onclick="postAndReload('/jobs/{{ j.id }}/retry')">Retry</button>
+                    {% endif %}
+                </td>
+            </tr>
+        {% else %}
+            <tr><td colspan="7" class="muted">No jobs match this filter.</td></tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+<script>
+function sendPatch(evt, form) {
+    evt.preventDefault();
+    const fd = new FormData(form);
+    const body = {
+        priority: Number(fd.get("priority")),
+        max_concurrency: Number(fd.get("max_concurrency")),
+    };
+    if (fd.get("strategy")) {
+        body.retry_policy = {
+            strategy: fd.get("strategy"),
+            max_retries: Number(fd.get("max_retries")),
+            base_delay_seconds: Number(fd.get("base_delay_seconds")),
+            multiplier: 2.0,
+            max_delay_seconds: 3600.0,
+        };
+    }
+    fetch(form.action, {
+        method: "PATCH",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(body),
+        credentials: "include",
+    }).then(() => window.location.reload());
+    return false;
+}
+
+function togglePause() {
+    postAndReload("/queues/{{ queue.id }}/{{ 'resume' if queue.is_paused else 'pause' }}");
+}
+
+function postAndReload(url) {
+    fetch(url, { method: "POST", credentials: "include" }).then(() => window.location.reload());
+}
+
+// ---------------------------------------------------------------------
+// "Submit a job" form: a friendly field-by-field builder by default,
+// with an "Advanced" toggle for anyone who'd rather just paste raw JSON.
+// ---------------------------------------------------------------------
+
+function onJobTypeChange() {
+    const type = document.getElementById("jf-type").value;
+    document.getElementById("jf-delay").style.display = type === "delayed" ? "block" : "none";
+    document.getElementById("jf-scheduled").style.display = type === "scheduled" ? "block" : "none";
+    document.getElementById("jf-recurring").style.display = type === "recurring" ? "block" : "none";
+    document.getElementById("jf-batch").style.display = type === "batch" ? "block" : "none";
+}
+
+function addPayloadRow(key, value) {
+    const row = document.createElement("div");
+    row.className = "jf-payload-row";
+    row.style.cssText = "display:flex; gap:8px; margin-bottom:8px; align-items:center;";
+    row.innerHTML = `
+        <input type="text" placeholder="field name" class="jf-key" style="margin-top:0;" value="${key || ''}">
+        <input type="text" placeholder="value" class="jf-value" style="margin-top:0;" value="${value || ''}">
+        <button type="button" class="button-secondary" style="margin:0; white-space:nowrap;" onclick="this.parentElement.remove()">Remove</button>
+    `;
+    document.getElementById("jf-payloadRows").appendChild(row);
+}
+
+function toggleAdvancedPayload() {
+    const advanced = document.getElementById("jf-advanced").checked;
+    document.getElementById("jf-simplePayload").style.display = advanced ? "none" : "block";
+    document.getElementById("jf-rawPayload").style.display = advanced ? "block" : "none";
+}
+
+function buildPayloadFromRows() {
+    const payload = {};
+    document.querySelectorAll("#jf-payloadRows .jf-payload-row").forEach((row) => {
+        const key = row.querySelector(".jf-key").value.trim();
+        const raw = row.querySelector(".jf-value").value;
+        if (!key) return;
+        // Best-effort typing: numbers/booleans become real JSON types,
+        // everything else stays a string -- so you don't have to quote
+        // "hello" but can still type 42 or true and get the right type.
+        if (raw === "true") payload[key] = true;
+        else if (raw === "false") payload[key] = false;
+        else if (raw !== "" && !isNaN(Number(raw))) payload[key] = Number(raw);
+        else payload[key] = raw;
+    });
+    return payload;
+}
+
+function showJobFormError(message) {
+    const el = document.getElementById("jf-error");
+    el.textContent = message;
+    el.style.display = "block";
+}
+
+async function submitJobForm(evt) {
+    evt.preventDefault();
+    const errorEl = document.getElementById("jf-error");
+    errorEl.style.display = "none";
+
+    const name = document.getElementById("jf-name").value.trim();
+    const type = document.getElementById("jf-type").value;
+    const priorityRaw = document.getElementById("jf-priority").value;
+    const priority = priorityRaw === "" ? null : Number(priorityRaw);
+
+    let payload;
+    if (document.getElementById("jf-advanced").checked) {
+        const rawText = document.getElementById("jf-rawJson").value.trim();
+        try {
+            payload = rawText ? JSON.parse(rawText) : {};
+        } catch (e) {
+            showJobFormError("That payload isn't valid JSON: " + e.message);
+            return false;
+        }
+    } else {
+        payload = buildPayloadFromRows();
+    }
+
+    let url, body;
+    if (type === "recurring") {
+        url = "/queues/{{ queue.id }}/scheduled-jobs";
+        const cron = document.getElementById("jf-cron").value.trim();
+        if (!cron) { showJobFormError("Cron expression is required for recurring jobs."); return false; }
+        body = { name: name, job_name: name, is_recurring: true, cron_expression: cron, payload_template: payload };
+    } else if (type === "batch") {
+        url = "/queues/{{ queue.id }}/jobs";
+        const count = Number(document.getElementById("jf-batchCount").value) || 2;
+        const items = [];
+        for (let i = 0; i < count; i++) items.push({ ...payload, index: i });
+        body = { name: name, job_type: "batch", batch_items: items, priority: priority };
+    } else {
+        url = "/queues/{{ queue.id }}/jobs";
+        body = { name: name, job_type: type, payload: payload, priority: priority };
+        if (type === "delayed") {
+            body.delay_seconds = Number(document.getElementById("jf-delaySeconds").value) || 0;
+        } else if (type === "scheduled") {
+            const runAtLocal = document.getElementById("jf-runAt").value;
+            if (!runAtLocal) { showJobFormError("Pick a date/time for scheduled jobs."); return false; }
+            body.run_at = new Date(runAtLocal).toISOString();
+        }
+    }
+
+    try {
+        const res = await fetch(url, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+            credentials: "include",
+        });
+        if (!res.ok) {
+            const errBody = await res.json().catch(() => null);
+            const message = errBody && errBody.error ? errBody.error.message : `Request failed (${res.status})`;
+            showJobFormError(message);
+            return false;
+        }
+        window.location.reload();
+    } catch (e) {
+        showJobFormError("Network error: " + e.message);
+    }
+    return false;
+}
+
+// Start with one empty payload field visible so the form doesn't look broken.
+addPayloadRow();
+</script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+<script>
+new Chart(document.getElementById("healthChart"), {
+    type: "bar",
+    data: {
+        labels: {{ health_series.labels | tojson }},
+        datasets: [
+            {
+                label: "Completed",
+                data: {{ health_series.completed | tojson }},
+                backgroundColor: "#0f7a3f",
+                stack: "jobs",
+            },
+            {
+                label: "Dead lettered",
+                data: {{ health_series.dead_lettered | tojson }},
+                backgroundColor: "#c62d2d",
+                stack: "jobs",
+            },
+        ],
+    },
+    options: {
+        responsive: true,
+        scales: {
+            x: { stacked: true, ticks: { color: "#6b7686" }, grid: { color: "#e2e5ea" } },
+            y: { stacked: true, beginAtZero: true, ticks: { color: "#6b7686", precision: 0 }, grid: { color: "#e2e5ea" } },
+        },
+        plugins: { legend: { labels: { color: "#0b2447" } } },
+    },
+});
+</script>
+{% endblock %}

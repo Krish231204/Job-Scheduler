@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block title %}Projects{% endblock %}
+{% block content %}
+<h1>Your projects</h1>
+<div class="grid">
+    {% for entry in projects %}
+    <a class="card link-card" href="/dashboard/projects/{{ entry.project.id }}">
+        <h2>{{ entry.project.name }}</h2>
+        <p class="muted">{{ entry.organization.name }}</p>
+        <p>{{ entry.project.description or "No description" }}</p>
+    </a>
+    {% else %}
+    <p class="muted">No projects yet.</p>
+    {% endfor %}
+</div>
+
+<h1>Workers</h1>
+<table class="table">
+    <thead><tr><th>Name</th><th>Host</th><th>Status</th><th>Concurrency</th><th>Last seen</th></tr></thead>
+    <tbody>
+    {% for w in workers %}
+        <tr>
+            <td>{{ w.name }}</td>
+            <td>{{ w.hostname }} (pid {{ w.pid }})</td>
+            <td><span class="badge status-{{ w.status.value if w.status.value != 'offline' and w.last_seen_at >= online_cutoff else 'offline' }}">{{ w.status.value }}</span></td>
+            <td>{{ w.concurrency }}</td>
+            <td>{{ w.last_seen_at }}</td>
+        </tr>
+    {% else %}
+        <tr><td colspan="5" class="muted">No workers registered. Start one with <code>python -m worker.main</code>.</td></tr>
+    {% endfor %}
+    </tbody>
+</table>
+{% endblock %}

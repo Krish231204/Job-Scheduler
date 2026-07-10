@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>{% block title %}Job Scheduler{% endblock %} · Job Scheduler</title>
+    <link rel="stylesheet" href="/static/style.css">
+    {% block refresh %}{% endblock %}
+</head>
+<body>
+    <header class="topbar">
+        <a class="brand" href="/dashboard">Job Scheduler</a>
+        <nav>
+            <a href="/dashboard">Projects</a>
+            <a href="/dashboard/workers">Workers</a>
+        </nav>
+        {% if user %}
+        <form method="post" action="/logout" class="logout-form">
+            <span class="muted">{{ user.email }}</span>
+            <button type="submit">Log out</button>
+        </form>
+        {% endif %}
+    </header>
+    <main class="container">
+        {% block content %}{% endblock %}
+    </main>
+</body>
+</html>

@@ -1,0 +1,65 @@
+version: "3.9"
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: codity
+      POSTGRES_PASSWORD: codity
+      POSTGRES_DB: codity
+    ports:
+      - "5432:5432"
+    volumes:
+      - codity_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U codity"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  migrate:
+    build: .
+    command: alembic upgrade head
+    environment:
+      DATABASE_URL: postgresql+asyncpg://codity:codity@db:5432/codity
+    depends_on:
+      db:
+        condition: service_healthy
+
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://codity:codity@db:5432/codity
+      JWT_SECRET: change-me-in-production
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    command: ["python", "-m", "worker.main", "--concurrency", "8"]
+    environment:
+      DATABASE_URL: postgresql+asyncpg://codity:codity@db:5432/codity
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    # Scale with: docker compose up --scale worker=3
+    # (deploy.replicas is a Swarm-only directive and is ignored by plain
+    # `docker compose up`, so we don't rely on it here.)
+
+  scheduler:
+    build:
+      context: .
+      dockerfile: Dockerfile.scheduler
+    environment:
+      DATABASE_URL: postgresql+asyncpg://codity:codity@db:5432/codity
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+volumes:
+  codity_pgdata:
