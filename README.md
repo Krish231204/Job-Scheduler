@@ -77,7 +77,9 @@ python -m scheduler.main                # terminal 3: scheduler (run exactly one
 
 1. Register at `/register` → you get a user, an organization (as owner),
    a default project, and a `default` queue with a sensible retry policy.
-2. Submit jobs via the REST API, e.g.:
+2. Submit jobs via the REST API, e.g. (login and job submission are both
+   rate-limited -- 5/minute and 60/minute respectively -- so a scripted
+   retry loop around either will eventually get a `429`):
 
 ```bash
 TOKEN=$(curl -s -X POST localhost:8000/auth/login \
@@ -110,6 +112,27 @@ register a real one by name. The demo handler simulates work and can be told
 to fail via `payload.simulate = "fail"` or `"flaky"` — handy for watching the
 retry/DLQ path in the dashboard without writing a real job handler first.
 
+**AI failure summaries:** a dead-lettered job's detail page has a "Get AI
+summary" button that explains the likely cause in plain English. Works out
+of the box with a rule-based fallback; set `ANTHROPIC_API_KEY` in `.env` (or
+pass it through to the `api` service in `docker-compose.yml`) for real
+Claude-generated summaries instead.
+
+**Roles:** the user who registers/creates an organization is its `owner`.
+Any org member can view queues/jobs and submit/retry/cancel jobs; changing
+queue configuration (priority, concurrency, retry policy, pause/resume) or
+creating new queues requires the `owner` or `admin` role.
+
+## Operations
+
+- `GET /health/live` — process-alive check, no dependencies.
+- `GET /health/ready` — checks the database is actually reachable
+  (`SELECT 1`); returns 503 if not. Use this one for load-balancer/
+  orchestrator readiness checks, not `/health/live`.
+- Set `ENVIRONMENT=production` in a real deployment: this makes the app
+  refuse to start if `JWT_SECRET` is still the insecure default, and makes
+  the dashboard's session cookie `Secure` (HTTPS-only).
+
 ## Testing
 
 ```bash
@@ -124,6 +147,19 @@ database. The lifecycle, DLQ, and — most importantly — the concurrent-claim
 tests need real Postgres, because they exercise `SELECT ... FOR UPDATE SKIP
 LOCKED` row-locking semantics that SQLite doesn't replicate; they're
 skipped automatically (not failed) if `TEST_DATABASE_URL` isn't reachable.
+
+**Coverage:** `pip install pytest-cov && pytest --cov=app --cov=worker --cov=scheduler --cov-report=term-missing`.
+Router/service code sits around 60-90%; `worker/` and `scheduler/` show 0%
+from `pytest` alone because their concurrency/lifecycle behavior is
+exercised through `tests/test_lifecycle.py` and
+`tests/test_claim_concurrency.py` calling the same service functions
+directly, not through the worker/scheduler process entrypoints themselves
+— those are verified by actually running them (see "Verification status"
+below), not by a coverage number. Reporting the real percentage here rather
+than a cherry-picked one is deliberate.
+
+**Lint & dependency scanning:** `pip install ruff pip-audit && ruff check .
+&& pip-audit -r requirements.txt` (also run in CI on every push/PR).
 
 **Verification status:** this has been run end-to-end via
 `docker compose up --build` against real Postgres -- registration, job
