@@ -1,0 +1,10 @@
+line-length = 165
+target-version = "py311"
+
+[lint]
+# E/F: real correctness signal (unused imports, undefined names, syntax
+# issues) -- the point of running this in CI. Import-sort (I) is left out
+# deliberately: enforcing it now would reformat import blocks across most
+# of the existing codebase for a purely cosmetic rule, unrelated to any
+# actual change.
+select = ["E", "F"]

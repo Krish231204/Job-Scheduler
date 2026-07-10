@@ -1,6 +1,4 @@
-from datetime import datetime, timedelta, timezone
 
-import pytest
 from sqlalchemy import select
 
 from app.models import DeadLetterEntry, JobStatus, JobType, Worker, WorkerStatus

@@ -9,12 +9,11 @@ Job status state machine:
         RUNNING --(failure, retries left)--> RETRYING --(delay elapses)--> QUEUED
         RUNNING --(failure, retries exhausted)--> DEAD_LETTER
 """
-import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
 
 from croniter import croniter
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import (
