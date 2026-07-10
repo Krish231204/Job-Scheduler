@@ -3,6 +3,7 @@
 {% block refresh %}<meta http-equiv="refresh" content="5">{% endblock %}
 {% block content %}
 <h1>Workers</h1>
+<div class="table-wrap">
 <table class="table">
     <thead><tr><th>ID</th><th>Name</th><th>Host</th><th>PID</th><th>Status</th><th>Concurrency</th><th>Started</th><th>Last seen</th></tr></thead>
     <tbody>
@@ -22,4 +23,5 @@
     {% endfor %}
     </tbody>
 </table>
+</div>
 {% endblock %}

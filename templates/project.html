@@ -6,6 +6,7 @@
 <p class="muted">{{ project.description }}</p>
 
 <h2>Queues</h2>
+<div class="table-wrap">
 <table class="table">
     <thead>
         <tr><th>Name</th><th>Priority</th><th>Concurrency</th><th>Paused</th><th>Queued</th><th>Running</th><th>Failed/Retrying</th><th>Dead letter</th><th>Throughput/hr</th></tr>
@@ -29,4 +30,5 @@
     {% endfor %}
     </tbody>
 </table>
+</div>
 {% endblock %}

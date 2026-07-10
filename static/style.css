@@ -98,6 +98,8 @@ h1 { margin-top: 0; }
 .kv th { color: var(--muted); text-align: left; padding: 6px 12px 6px 0; vertical-align: top; }
 .kv td { padding: 6px 0; }
 
+pre { white-space: pre-wrap; word-break: break-word; }
+
 .badge {
     display: inline-block;
     padding: 2px 10px;
@@ -195,3 +197,57 @@ button.button-secondary:hover {
 .error { color: var(--err); }
 
 .auth-card { max-width: 380px; margin: 60px auto; }
+
+/* Wide tables (job explorer, worker list, queue list) shouldn't force the
+   whole page to scroll horizontally on a small screen -- only the table
+   itself scrolls, everything else stays put. */
+.table-wrap {
+    width: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+}
+.table-wrap .table { min-width: 560px; }
+
+/* ------------------------------------------------------------------ */
+/* Responsive breakpoints                                             */
+/* ------------------------------------------------------------------ */
+
+@media (max-width: 720px) {
+    .container { padding: 16px; }
+    h1 { font-size: 1.35rem; }
+
+    .topbar {
+        flex-wrap: wrap;
+        padding: 12px 16px;
+        gap: 10px;
+    }
+    .topbar nav {
+        order: 3;
+        flex-basis: 100%;
+        gap: 2px;
+    }
+    .topbar nav a { padding: 6px 8px; font-size: 0.9rem; }
+    .logout-form { margin-left: auto; gap: 8px; }
+    .logout-form .user-email { display: none; } /* saves space; email is on /auth/me and the account itself is obvious from context */
+
+    .card { padding: 14px; }
+    .grid { grid-template-columns: 1fr; }
+    .stats-grid { grid-template-columns: repeat(2, 1fr); }
+
+    .filter-bar { gap: 4px; }
+    .filter-bar a { padding: 5px 8px; font-size: 0.8rem; }
+
+    /* Stack action buttons full-width instead of a cramped inline row. */
+    .card form > button,
+    .card form > button.button-secondary {
+        display: block;
+        width: 100%;
+        margin: 8px 0 0;
+    }
+}
+
+@media (max-width: 420px) {
+    .stats-grid { grid-template-columns: 1fr 1fr; }
+    .stat-value { font-size: 1.4rem; }
+    .topbar .brand { font-size: 1.05rem; }
+}
