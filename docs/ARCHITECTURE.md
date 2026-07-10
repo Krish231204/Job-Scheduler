@@ -78,7 +78,7 @@ sequenceDiagram
     alt success
         Worker->>DB: UPDATE status=COMPLETED, execution.status=succeeded
     else failure
-        Worker->>DB: compute backoff; UPDATE status=RETRYING or DEAD_LETTER
+        Worker->>DB: compute backoff, UPDATE status=RETRYING or DEAD_LETTER
     end
 ```
 
