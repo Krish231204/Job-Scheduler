@@ -19,6 +19,7 @@ import logging
 from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
+from slowapi.errors import RateLimitExceeded
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 logger = logging.getLogger("codity.api")
@@ -65,6 +66,14 @@ def register_error_handlers(app: FastAPI) -> None:
         return JSONResponse(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             content=_error_body("validation_error", "Request validation failed", details=exc.errors()),
+        )
+
+    @app.exception_handler(RateLimitExceeded)
+    async def handle_rate_limit_exceeded(request: Request, exc: RateLimitExceeded):
+        logger.info("Rate limit exceeded on %s %s: %s", request.method, request.url.path, exc.detail)
+        return JSONResponse(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            content=_error_body("rate_limited", "Too many requests, please slow down."),
         )
 
     @app.exception_handler(Exception)
