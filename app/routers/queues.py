@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.database import get_db
-from app.deps import get_project_for_user, get_queue_for_user
+from app.deps import get_project_admin, get_project_for_user, get_queue_admin, get_queue_for_user
 from app.models import Project, Queue, RetryPolicy
 from app.schemas import QueueCreate, QueueOut, QueueStats, QueueUpdate
 from app.services.stats import queue_stats
@@ -20,7 +20,7 @@ async def create_queue(
     project_id: int,
     payload: QueueCreate,
     db: AsyncSession = Depends(get_db),
-    project: Project = Depends(get_project_for_user),
+    project: Project = Depends(get_project_admin),
 ):
     queue = Queue(
         project_id=project.id,
@@ -58,7 +58,7 @@ async def get_queue(queue: Queue = Depends(get_queue_for_user)):
 async def update_queue(
     payload: QueueUpdate,
     db: AsyncSession = Depends(get_db),
-    queue: Queue = Depends(get_queue_for_user),
+    queue: Queue = Depends(get_queue_admin),
 ):
     if payload.priority is not None:
         queue.priority = payload.priority
@@ -79,7 +79,7 @@ async def update_queue(
 
 
 @router.post("/queues/{queue_id}/pause", response_model=QueueOut)
-async def pause_queue(db: AsyncSession = Depends(get_db), queue: Queue = Depends(get_queue_for_user)):
+async def pause_queue(db: AsyncSession = Depends(get_db), queue: Queue = Depends(get_queue_admin)):
     queue.is_paused = True
     await db.commit()
     await db.refresh(queue)
@@ -88,7 +88,7 @@ async def pause_queue(db: AsyncSession = Depends(get_db), queue: Queue = Depends
 
 
 @router.post("/queues/{queue_id}/resume", response_model=QueueOut)
-async def resume_queue(db: AsyncSession = Depends(get_db), queue: Queue = Depends(get_queue_for_user)):
+async def resume_queue(db: AsyncSession = Depends(get_db), queue: Queue = Depends(get_queue_admin)):
     queue.is_paused = False
     await db.commit()
     await db.refresh(queue)

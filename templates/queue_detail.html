@@ -22,6 +22,7 @@
 
 <div class="card">
     <h2>Queue configuration</h2>
+    {% if is_queue_admin %}
     <form method="post" action="/queues/{{ queue.id }}" onsubmit="return sendPatch(event, this)">
         <label>Priority <input type="number" name="priority" value="{{ queue.priority }}"></label>
         <label>Max concurrency <input type="number" name="max_concurrency" value="{{ queue.max_concurrency }}"></label>
@@ -39,10 +40,14 @@
         <button type="submit">Save</button>
         <button type="button" class="button-secondary" onclick="togglePause()">{{ "Resume queue" if queue.is_paused else "Pause queue" }}</button>
     </form>
+    {% else %}
+    <p class="muted">Only organization admins/owners can modify queue configuration.</p>
+    {% endif %}
 </div>
 
 <div class="card">
     <h2>Scheduled / recurring jobs</h2>
+    <div class="table-wrap">
     <table class="table">
         <thead><tr><th>Name</th><th>Job</th><th>Cron</th><th>Next run</th><th>Active</th></tr></thead>
         <tbody>
@@ -58,6 +63,7 @@
         {% endfor %}
         </tbody>
     </table>
+    </div>
 </div>
 
 <div class="card">
@@ -121,6 +127,7 @@
         <a href="/dashboard/queues/{{ queue.id }}?status_filter={{ s.value }}" class="{{ 'active' if status_filter == s.value }}">{{ s.value }}</a>
         {% endfor %}
     </div>
+    <div class="table-wrap">
     <table class="table">
         <thead><tr><th>ID</th><th>Name</th><th>Type</th><th>Status</th><th>Attempts</th><th>Run at</th><th></th></tr></thead>
         <tbody>
@@ -143,6 +150,7 @@
         {% endfor %}
         </tbody>
     </table>
+    </div>
 </div>
 
 <script>

@@ -7,25 +7,40 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.config import get_settings
 from app.database import get_db
+from app.deps import get_job_for_user, get_project_for_user, get_queue_for_user, get_queue_role
 from app.models import (
     Job,
     JobStatus,
     Organization,
     OrganizationMember,
+    OrgRole,
     Project,
     Queue,
     ScheduledJob,
     User,
     Worker,
-    WorkerStatus,
 )
+from app.rate_limit import limiter
 from app.security import create_access_token, hash_password, verify_password
 from app.services.stats import queue_health_series, queue_stats
 from app.web_auth import COOKIE_NAME, get_current_user_from_cookie, require_web_user
 
 router = APIRouter(tags=["dashboard"])
 templates = Jinja2Templates(directory="templates")
+settings = get_settings()
+
+
+def _set_session_cookie(response, token: str) -> None:
+    response.set_cookie(
+        COOKIE_NAME,
+        token,
+        httponly=True,
+        samesite="lax",
+        secure=settings.environment == "production",
+        max_age=60 * 60 * 24,
+    )
 
 
 @router.get("/login", response_class=HTMLResponse)
@@ -34,6 +49,7 @@ async def login_form(request: Request):
 
 
 @router.post("/login")
+@limiter.limit("5/minute")
 async def login_submit(
     request: Request,
     email: str = Form(...),
@@ -46,7 +62,7 @@ async def login_submit(
         return templates.TemplateResponse(request, "login.html", {"error": "Invalid email or password"}, status_code=401)
     token = create_access_token(subject=str(user.id))
     response = RedirectResponse(url="/dashboard", status_code=status.HTTP_303_SEE_OTHER)
-    response.set_cookie(COOKIE_NAME, token, httponly=True, samesite="lax", max_age=60 * 60 * 24)
+    _set_session_cookie(response, token)
     return response
 
 
@@ -72,7 +88,6 @@ async def register_submit(
     db.add(user)
     await db.flush()
 
-    from app.models import OrgRole
     org = Organization(name=org_name)
     db.add(org)
     await db.flush()
@@ -92,7 +107,7 @@ async def register_submit(
 
     token = create_access_token(subject=str(user.id))
     response = RedirectResponse(url="/dashboard", status_code=status.HTTP_303_SEE_OTHER)
-    response.set_cookie(COOKIE_NAME, token, httponly=True, samesite="lax", max_age=60 * 60 * 24)
+    _set_session_cookie(response, token)
     return response
 
 
@@ -132,10 +147,14 @@ async def dashboard_home(request: Request, db: AsyncSession = Depends(get_db), u
 
 
 @router.get("/dashboard/projects/{project_id}", response_class=HTMLResponse)
-async def dashboard_project(project_id: int, request: Request, db: AsyncSession = Depends(get_db), user: User = Depends(require_web_user)):
-    project = await db.get(Project, project_id)
+async def dashboard_project(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_web_user),
+    project: Project = Depends(get_project_for_user),
+):
     result = await db.execute(
-        select(Queue).options(selectinload(Queue.retry_policy)).where(Queue.project_id == project_id)
+        select(Queue).options(selectinload(Queue.retry_policy)).where(Queue.project_id == project.id)
     )
     queues = list(result.scalars().all())
     stats_by_queue = {q.id: await queue_stats(db, q.id) for q in queues}
@@ -149,26 +168,26 @@ async def dashboard_project(project_id: int, request: Request, db: AsyncSession 
 
 @router.get("/dashboard/queues/{queue_id}", response_class=HTMLResponse)
 async def dashboard_queue(
-    queue_id: int,
     request: Request,
     db: AsyncSession = Depends(get_db),
     user: User = Depends(require_web_user),
+    queue: Queue = Depends(get_queue_for_user),
     status_filter: str | None = None,
 ):
-    result = await db.execute(select(Queue).options(selectinload(Queue.retry_policy)).where(Queue.id == queue_id))
-    queue = result.scalar_one()
-
-    filters = [Job.queue_id == queue_id]
+    filters = [Job.queue_id == queue.id]
     if status_filter:
         filters.append(Job.status == JobStatus(status_filter))
 
     jobs_result = await db.execute(select(Job).where(*filters).order_by(Job.created_at.desc()).limit(100))
     jobs = list(jobs_result.scalars().all())
-    stats = await queue_stats(db, queue_id)
-    health_series = await queue_health_series(db, queue_id, hours=24)
+    stats = await queue_stats(db, queue.id)
+    health_series = await queue_health_series(db, queue.id, hours=24)
 
-    sj_result = await db.execute(select(ScheduledJob).where(ScheduledJob.queue_id == queue_id))
+    sj_result = await db.execute(select(ScheduledJob).where(ScheduledJob.queue_id == queue.id))
     scheduled_jobs = list(sj_result.scalars().all())
+
+    role = await get_queue_role(db, queue.id, user.id)
+    is_queue_admin = role in (OrgRole.OWNER, OrgRole.ADMIN)
 
     return templates.TemplateResponse(
         request,
@@ -182,16 +201,17 @@ async def dashboard_queue(
             "scheduled_jobs": scheduled_jobs,
             "statuses": list(JobStatus),
             "status_filter": status_filter,
+            "is_queue_admin": is_queue_admin,
         },
     )
 
 
 @router.get("/dashboard/jobs/{job_id}", response_class=HTMLResponse)
-async def dashboard_job(job_id: int, request: Request, db: AsyncSession = Depends(get_db), user: User = Depends(require_web_user)):
-    result = await db.execute(
-        select(Job).options(selectinload(Job.executions), selectinload(Job.logs)).where(Job.id == job_id)
-    )
-    job = result.scalar_one()
+async def dashboard_job(
+    request: Request,
+    user: User = Depends(require_web_user),
+    job: Job = Depends(get_job_for_user),
+):
     return templates.TemplateResponse(request, "job_detail.html", {"user": user, "job": job})
 
 
