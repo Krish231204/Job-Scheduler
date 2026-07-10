@@ -1,10 +1,17 @@
+FROM python:3.11-slim AS builder
+
+WORKDIR /srv
+COPY requirements.txt .
+RUN pip install --no-cache-dir --user -r requirements.txt
+
 FROM python:3.11-slim
 
 WORKDIR /srv
+RUN useradd -m -u 1000 appuser
+COPY --from=builder --chown=appuser:appuser /root/.local /home/appuser/.local
+COPY --chown=appuser:appuser . .
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-COPY . .
+USER appuser
+ENV PATH=/home/appuser/.local/bin:$PATH
 
 CMD ["python", "-m", "scheduler.main"]
