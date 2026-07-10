@@ -6,6 +6,11 @@ server is running. This page is a quick reference.
 
 All endpoints except `/auth/register` and `/auth/login` require
 `Authorization: Bearer <token>` (or the dashboard's session cookie).
+Endpoints marked **admin/owner** below additionally require the caller's
+`OrganizationMember.role` for that org to be `owner` or `admin` -- a plain
+`member` gets `403`. `/auth/login` and the dashboard's `/login` are
+rate-limited (5/minute); `POST /queues/{queue_id}/jobs` is rate-limited
+(60/minute).
 
 ## Error format
 
@@ -44,12 +49,12 @@ per-field errors on a 422). See `app/errors.py`.
 
 | Method | Path | Description |
 |---|---|---|
-| POST | `/projects/{project_id}/queues` | Create queue (with retry policy) |
+| POST | `/projects/{project_id}/queues` | Create queue (with retry policy) **-- admin/owner** |
 | GET | `/projects/{project_id}/queues` | List queues |
 | GET | `/queues/{queue_id}` | Get queue |
-| PATCH | `/queues/{queue_id}` | Update priority / concurrency / pause / retry policy |
-| POST | `/queues/{queue_id}/pause` | Pause (stop claiming new jobs) |
-| POST | `/queues/{queue_id}/resume` | Resume |
+| PATCH | `/queues/{queue_id}` | Update priority / concurrency / retry policy **-- admin/owner** |
+| POST | `/queues/{queue_id}/pause` | Pause (stop claiming new jobs) **-- admin/owner** |
+| POST | `/queues/{queue_id}/resume` | Resume **-- admin/owner** |
 | GET | `/queues/{queue_id}/stats` | Counts by status, throughput, avg duration |
 
 ## Jobs
@@ -61,6 +66,7 @@ per-field errors on a 422). See `app/errors.py`.
 | GET | `/jobs/{job_id}` | Job detail incl. execution history and logs |
 | POST | `/jobs/{job_id}/retry` | Requeue a failed/dead-lettered/cancelled job |
 | POST | `/jobs/{job_id}/cancel` | Cancel a not-yet-running job |
+| POST | `/jobs/{job_id}/ai-summary` | Generate (or return the cached) plain-English failure summary -- 400 unless the job is `dead_letter` |
 
 Recurring jobs are created via **Scheduled Jobs**, not `POST .../jobs`
 directly (a bare Job row can't keep firing on a cron):
@@ -103,3 +109,10 @@ override the queue's default retry policy for that one job.
 
 `/login`, `/register`, `/dashboard`, `/dashboard/projects/{id}`,
 `/dashboard/queues/{id}`, `/dashboard/jobs/{id}`, `/dashboard/workers`.
+
+## Operations
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/health/live` | Process-alive check, no dependencies |
+| GET | `/health/ready` | Checks the database is reachable; 503 if not |

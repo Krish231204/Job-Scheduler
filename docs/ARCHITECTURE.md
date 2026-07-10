@@ -82,6 +82,27 @@ sequenceDiagram
     end
 ```
 
+## Request-path additions (rate limiting, health checks, optional AI calls)
+
+- Every request through the API process passes through a `slowapi`
+  rate-limiting middleware; only specific routes carry a limit
+  (`/auth/login`, dashboard `/login`, job submission) -- most endpoints are
+  unaffected. This is in-process/in-memory, not shared across API
+  replicas; acceptable at this project's scale, and called out explicitly
+  as a scaling limitation rather than left implicit.
+- `/health/live` (no dependencies) and `/health/ready` (checks Postgres)
+  are separate on purpose -- a load balancer or orchestrator should route
+  on readiness, not liveness, or it'll keep sending traffic to a replica
+  whose database connection is down but whose process is still alive.
+- The AI failure-summary feature is the one place the API process makes
+  an *outbound* call to something other than Postgres (the Anthropic API,
+  only when a user clicks "Get AI summary" on a dead-lettered job, and
+  only if `ANTHROPIC_API_KEY` is configured). It's synchronous from the
+  request's perspective and falls back to a local rule-based summary on
+  any failure -- see `docs/DESIGN_DECISIONS.md` -- so it never turns an
+  external provider outage into a broken dashboard page, and never blocks
+  the job lifecycle itself (which has nothing to do with this feature).
+
 ## Failure recovery
 
 If a worker crashes mid-job, the DB still shows that job as `CLAIMED` or

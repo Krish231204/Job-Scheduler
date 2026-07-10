@@ -98,6 +98,7 @@ erDiagram
         int queue_id FK
         text reason
         int attempt_count
+        text ai_summary "nullable, cached on first-generated AI failure summary"
     }
     WORKERS {
         int id PK
@@ -147,6 +148,13 @@ clearer than juggling nullable columns on two different tables.
   query.
 - `ix_worker_heartbeats_timestamp` — supports trimming/graphing heartbeat
   history without a scan.
+
+**Why `ai_summary` lives on `DeadLetterEntry`, not `Job`.** The
+AI-generated failure summary (see `docs/DESIGN_DECISIONS.md`) is only ever
+meaningful for a job that's actually dead-lettered -- there's a natural
+one-to-one fit with the row that already represents "this job is
+permanently failed," rather than adding a nullable column to `Job` that's
+meaningless for the other 8 statuses a job can be in.
 
 **Why `Job` and `ScheduledJob` are separate tables** rather than one
 self-referential table: a `ScheduledJob` is a *template* that can fire many
