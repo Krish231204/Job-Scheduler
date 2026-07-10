@@ -16,9 +16,10 @@ import os
 
 import pytest
 import pytest_asyncio
+from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from app.database import Base
+from app.database import Base, get_db
 
 TEST_DATABASE_URL = os.environ.get(
     "TEST_DATABASE_URL", "postgresql+asyncpg://codity:codity@localhost:5432/codity_test"
@@ -73,3 +74,24 @@ async def session_factory(engine):
     committed sessions (e.g. the concurrent-claim test).
     """
     return async_sessionmaker(engine, expire_on_commit=False)
+
+
+@pytest_asyncio.fixture
+async def api_client(session_factory):
+    """An httpx client wired directly to the real FastAPI app (via
+    ASGITransport, no real socket) with get_db overridden to hand out
+    sessions against the throwaway test database -- for tests that need to
+    exercise actual routing/auth/dependency behavior, not just the service
+    layer.
+    """
+    from app.main import app
+
+    async def _override_get_db():
+        async with session_factory() as session:
+            yield session
+
+    app.dependency_overrides[get_db] = _override_get_db
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        yield client
+    app.dependency_overrides.pop(get_db, None)
