@@ -34,6 +34,8 @@ flowchart LR
     Scheduler --> DB
 ```
 
+![Component architecture diagram](images/architecture-components.png)
+
 ## Why three process types
 
 - **API process** is stateless and horizontally scalable behind a load
@@ -81,6 +83,8 @@ sequenceDiagram
         Worker->>DB: compute backoff, UPDATE status=RETRYING or DEAD_LETTER
     end
 ```
+
+![Job flow sequence diagram](images/architecture-job-flow.png)
 
 ## Request-path additions (rate limiting, health checks, optional AI calls)
 

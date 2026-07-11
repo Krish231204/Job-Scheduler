@@ -115,6 +115,8 @@ erDiagram
     }
 ```
 
+![Entity-relationship diagram](images/er-diagram.png)
+
 ## Key design choices
 
 **Primary keys.** Plain autoincrement integers everywhere. Simpler, smaller
