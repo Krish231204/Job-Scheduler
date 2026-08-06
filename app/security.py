@@ -1,8 +1,8 @@
 from datetime import datetime, timedelta, timezone
 
+import jwt
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordBearer
-from jose import JWTError, jwt
 from passlib.context import CryptContext
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -36,12 +36,16 @@ def create_access_token(subject: str) -> str:
 
 def decode_token(token: str) -> str:
     try:
+        # algorithms= is the important argument here: pinning it to the one
+        # algorithm we sign with is what stops a caller supplying a token
+        # whose own header picks a weaker one (the classic JWT "alg"
+        # confusion attack). PyJWT also rejects `alg: none` outright.
         payload = jwt.decode(token, settings.jwt_secret, algorithms=[settings.jwt_algorithm])
         sub = payload.get("sub")
         if sub is None:
             raise ValueError("missing subject")
         return sub
-    except (JWTError, ValueError) as exc:
+    except (jwt.PyJWTError, ValueError) as exc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Could not validate credentials",

@@ -90,17 +90,47 @@ codebase's existing test suite (particularly `test_api_auth.py`, which
 exercises real routing/dependency-injection through the ASGI app) served as
 a meaningful compatibility check, not just "it imports."
 
-Two vulnerabilities remain and are being consciously accepted rather than
-silently ignored: `ecdsa` (`PYSEC-2026-1325`, no fix version -- a
-long-standing, maintainer-acknowledged timing-side-channel inherent to any
+Two vulnerabilities initially remained and were consciously accepted rather
+than silently ignored: `ecdsa` (`PYSEC-2026-1325`, no fix version -- a
+long-standing, maintainer-acknowledged timing side-channel inherent to any
 pure-Python ECDSA implementation) and `pyasn1` (`CVE-2026-30922`, fix
 version `0.6.3+`, but `python-jose==3.4.0` itself hard-pins
-`pyasn1<0.5.0`). Both are transitive dependencies of `python-jose` that
-can't be independently upgraded without either patching `python-jose`'s own
-metadata or replacing it with a different JWT library (e.g. `PyJWT`) --
-a larger, riskier change than this pass's scope justifies for two
-vulnerabilities in a dependency's dependency, neither of which is reachable
-through this app's actual JWT usage (HS256 symmetric signing, not ECDSA).
+`pyasn1<0.5.0`). Both were transitive dependencies of `python-jose`, and
+neither was reachable through this app's actual JWT usage (HS256 symmetric
+signing, not ECDSA), so `--ignore-vuln` in CI seemed proportionate against
+the cost of swapping JWT libraries.
+
+### That decision was revisited, and reversed (2026-08-07)
+
+Re-running `pip-audit` a month later returned **seven** findings instead of
+two -- four new `pyasn1` advisories (`PYSEC-2026-3455/3456/3457`,
+`PYSEC-2026-2263`) on top of the originals. That changes the arithmetic:
+the ignore list wasn't stable, it was an accruing liability in a dependency
+that structurally *cannot* be patched, because `python-jose`'s own pin
+blocks every fix version. Each new advisory would have silently reddened CI
+until someone appended another `--ignore-vuln`, which is precisely how a
+vulnerability scanner stops being a signal.
+
+So `python-jose` was replaced with `PyJWT` (2.13.0). The app only ever
+signed HS256, so the swap is ~5 lines in `app/security.py` (`jose.JWTError`
+becomes `jwt.PyJWTError`; `encode`/`decode` signatures are identical), and
+it removes `python-jose`, `ecdsa`, `pyasn1`, and `rsa` from the dependency
+tree outright -- the ECDSA/ASN.1 machinery every one of those advisories
+lived in was never used here. `pip-audit` now reports **no known
+vulnerabilities**, and CI carries no `--ignore-vuln` flags at all, so the
+next real advisory will actually fail the build.
+
+Verified beyond "the tests pass": token round-trip, tampered signature,
+`alg: none`, and expired token all confirmed to produce 401 (PyJWT rejects
+`alg: none` outright, and `algorithms=` is pinned to the single configured
+algorithm, which is what prevents algorithm-confusion attacks).
+
+One useful thing PyJWT surfaced that `python-jose` never did: an
+`InsecureKeyLengthWarning` for HMAC keys under 32 bytes (RFC 7518 §3.2).
+The production startup guard now hard-fails on a too-short `JWT_SECRET`,
+not just on the known default value -- a short but non-default secret is
+brute-forceable offline by anyone holding one valid token, and was
+previously accepted without complaint.
 
 `ruff` (`E`/`F` rule sets -- real correctness signal: unused imports,
 undefined names -- not import-sorting, which was left out to avoid

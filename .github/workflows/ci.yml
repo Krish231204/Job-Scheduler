@@ -46,11 +46,12 @@ jobs:
       - name: Dependency vulnerability scan (pip-audit)
         run: |
           pip install pip-audit
-          # PYSEC-2026-1325 (ecdsa) and CVE-2026-30922 (pyasn1) are transitive
-          # deps of python-jose with no available fix compatible with the
-          # pin python-jose itself requires (see docs/DESIGN_DECISIONS.md) --
-          # ignored here so CI still fails on any *new* vulnerability.
-          pip-audit -r requirements.txt --ignore-vuln PYSEC-2026-1325 --ignore-vuln CVE-2026-30922
+          # No --ignore-vuln flags on purpose. The ones that used to be here
+          # covered unfixable pyasn1/ecdsa advisories pulled in by
+          # python-jose; that dependency was replaced with PyJWT instead
+          # (see docs/DESIGN_DECISIONS.md), so any finding now is a real,
+          # actionable one and should fail the build.
+          pip-audit -r requirements.txt
 
       - name: Run tests with coverage
         run: |
