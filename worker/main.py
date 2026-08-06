@@ -21,11 +21,11 @@ from worker.runner import WorkerRunner
 # it. app/main.py and scheduler/main.py both set this up already; this file
 # was the one place it got missed.
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s [%(name)s] %(message)s")
-logger = logging.getLogger("codity.worker")
+logger = logging.getLogger("jobsched.worker")
 
 
 async def main() -> None:
-    parser = argparse.ArgumentParser(description="Codity worker process")
+    parser = argparse.ArgumentParser(description="Job scheduler worker process")
     parser.add_argument("--concurrency", type=int, default=None, help="Max concurrent jobs this process runs")
     args = parser.parse_args()
 

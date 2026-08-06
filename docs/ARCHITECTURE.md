@@ -9,7 +9,7 @@ flowchart LR
         API_Client["API client / script"]
     end
 
-    subgraph "Codity API process (FastAPI, N replicas, stateless)"
+    subgraph "API process (FastAPI, N replicas, stateless)"
         REST["REST routers\nauth / orgs / projects / queues / jobs"]
         Dash["Dashboard routers\n(Jinja2 server-rendered)"]
     end

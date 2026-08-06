@@ -11,7 +11,7 @@ import logging
 
 from app.config import get_settings
 
-logger = logging.getLogger("codity.ai_summary")
+logger = logging.getLogger("jobsched.ai_summary")
 settings = get_settings()
 
 _RULE_BASED_HINTS: list[tuple[tuple[str, ...], str]] = [

@@ -9,7 +9,7 @@ from app.models import Organization, OrganizationMember, OrgRole, User
 from app.schemas import OrganizationCreate, OrganizationOut
 from app.security import get_current_user
 
-logger = logging.getLogger("codity.api.orgs")
+logger = logging.getLogger("jobsched.api.orgs")
 router = APIRouter(prefix="/organizations", tags=["organizations"])
 
 

@@ -12,8 +12,8 @@ class Settings(BaseSettings):
     environment: str = "development"  # "development" | "production"
 
     # Database
-    database_url: str = "postgresql+asyncpg://codity:codity@localhost:5432/codity"
-    sync_database_url: str = "postgresql+psycopg2://codity:codity@localhost:5432/codity"
+    database_url: str = "postgresql+asyncpg://jobsched:jobsched@localhost:5432/jobsched"
+    sync_database_url: str = "postgresql+psycopg2://jobsched:jobsched@localhost:5432/jobsched"
     db_pool_size: int = 10
     db_max_overflow: int = 20
 

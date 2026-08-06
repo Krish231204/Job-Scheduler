@@ -21,7 +21,7 @@ from app.schemas import (
 from app.services.ai_summary import summarize_failure
 from app.services.job_service import compute_initial_next_run, create_batch, create_job
 
-logger = logging.getLogger("codity.api.jobs")
+logger = logging.getLogger("jobsched.api.jobs")
 router = APIRouter(tags=["jobs"])
 
 

@@ -22,7 +22,7 @@ from fastapi.responses import JSONResponse, Response
 from slowapi.errors import RateLimitExceeded
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-logger = logging.getLogger("codity.api")
+logger = logging.getLogger("jobsched.api")
 
 _CODE_BY_STATUS = {
     400: "bad_request",

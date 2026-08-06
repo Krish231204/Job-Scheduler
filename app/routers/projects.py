@@ -10,7 +10,7 @@ from app.models import Organization, Project, User
 from app.schemas import ProjectCreate, ProjectOut
 from app.security import get_current_user
 
-logger = logging.getLogger("codity.api.projects")
+logger = logging.getLogger("jobsched.api.projects")
 router = APIRouter(tags=["projects"])
 
 

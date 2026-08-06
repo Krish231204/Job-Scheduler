@@ -60,6 +60,6 @@ async def health_ready(db: AsyncSession = Depends(get_db)):
     try:
         await db.execute(text("SELECT 1"))
     except Exception:
-        logging.getLogger("codity.api").exception("Readiness check failed: database unreachable")
+        logging.getLogger("jobsched.api").exception("Readiness check failed: database unreachable")
         return JSONResponse(status_code=503, content={"status": "unavailable"})
     return {"status": "ok"}

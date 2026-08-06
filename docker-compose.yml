@@ -4,15 +4,15 @@ services:
   db:
     image: postgres:16-alpine
     environment:
-      POSTGRES_USER: codity
-      POSTGRES_PASSWORD: codity
-      POSTGRES_DB: codity
+      POSTGRES_USER: jobsched
+      POSTGRES_PASSWORD: jobsched
+      POSTGRES_DB: jobsched
     ports:
       - "5432:5432"
     volumes:
-      - codity_pgdata:/var/lib/postgresql/data
+      - jobsched_pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U codity"]
+      test: ["CMD-SHELL", "pg_isready -U jobsched"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -21,7 +21,7 @@ services:
     build: .
     command: alembic upgrade head
     environment:
-      DATABASE_URL: postgresql+asyncpg://codity:codity@db:5432/codity
+      DATABASE_URL: postgresql+asyncpg://jobsched:jobsched@db:5432/jobsched
     depends_on:
       db:
         condition: service_healthy
@@ -31,7 +31,7 @@ services:
     ports:
       - "8000:8000"
     environment:
-      DATABASE_URL: postgresql+asyncpg://codity:codity@db:5432/codity
+      DATABASE_URL: postgresql+asyncpg://jobsched:jobsched@db:5432/jobsched
       # ENVIRONMENT is intentionally left unset (defaults to "development")
       # in this local/grading compose file, so this insecure default secret
       # is accepted. app/main.py refuses to boot with this value if
@@ -50,7 +50,7 @@ services:
       dockerfile: Dockerfile.worker
     command: ["python", "-m", "worker.main", "--concurrency", "8"]
     environment:
-      DATABASE_URL: postgresql+asyncpg://codity:codity@db:5432/codity
+      DATABASE_URL: postgresql+asyncpg://jobsched:jobsched@db:5432/jobsched
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -63,10 +63,10 @@ services:
       context: .
       dockerfile: Dockerfile.scheduler
     environment:
-      DATABASE_URL: postgresql+asyncpg://codity:codity@db:5432/codity
+      DATABASE_URL: postgresql+asyncpg://jobsched:jobsched@db:5432/jobsched
     depends_on:
       migrate:
         condition: service_completed_successfully
 
 volumes:
-  codity_pgdata:
+  jobsched_pgdata:

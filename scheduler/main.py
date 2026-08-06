@@ -22,7 +22,7 @@ from app.database import AsyncSessionLocal
 from app.services.job_service import detect_stale_workers, materialize_due_scheduled_jobs, promote_retrying_jobs
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s [%(name)s] %(message)s")
-logger = logging.getLogger("codity.scheduler")
+logger = logging.getLogger("jobsched.scheduler")
 settings = get_settings()
 
 _shutdown = asyncio.Event()

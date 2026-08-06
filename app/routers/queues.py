@@ -11,7 +11,7 @@ from app.models import Project, Queue, RetryPolicy
 from app.schemas import QueueCreate, QueueOut, QueueStats, QueueUpdate
 from app.services.stats import queue_stats
 
-logger = logging.getLogger("codity.api.queues")
+logger = logging.getLogger("jobsched.api.queues")
 router = APIRouter(tags=["queues"])
 
 

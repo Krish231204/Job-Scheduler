@@ -5,7 +5,7 @@ the concurrency behavior we're specifically testing, isn't meaningfully
 exercised by SQLite). Point TEST_DATABASE_URL at a throwaway database, e.g.
 via `docker compose up -d db` and:
 
-    export TEST_DATABASE_URL=postgresql+asyncpg://codity:codity@localhost:5432/codity_test
+    export TEST_DATABASE_URL=postgresql+asyncpg://jobsched:jobsched@localhost:5432/jobsched_test
 
 Tests are skipped automatically if no test database is reachable, so
 `pytest` still runs cleanly (skipping the DB-backed tests) in environments
@@ -22,7 +22,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from app.database import Base, get_db
 
 TEST_DATABASE_URL = os.environ.get(
-    "TEST_DATABASE_URL", "postgresql+asyncpg://codity:codity@localhost:5432/codity_test"
+    "TEST_DATABASE_URL", "postgresql+asyncpg://jobsched:jobsched@localhost:5432/jobsched_test"
 )
 
 

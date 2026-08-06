@@ -11,7 +11,7 @@ from app.rate_limit import limiter
 from app.schemas import Token, UserCreate, UserOut
 from app.security import create_access_token, get_current_user, hash_password, verify_password
 
-logger = logging.getLogger("codity.api.auth")
+logger = logging.getLogger("jobsched.api.auth")
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 

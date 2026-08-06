@@ -17,7 +17,7 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 # (no Authorization header) don't get rejected before we can check the
 # cookie ourselves in get_current_user below.
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login", auto_error=False)
-SESSION_COOKIE_NAME = "codity_session"
+SESSION_COOKIE_NAME = "jobsched_session"
 
 
 def hash_password(password: str) -> str:
