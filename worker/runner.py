@@ -15,7 +15,7 @@ from app.services.job_service import claim_jobs, complete_execution, fail_execut
 from worker.handlers import get_handler
 from worker.naming import generate_worker_name
 
-logger = logging.getLogger("codity.worker")
+logger = logging.getLogger("jobsched.worker")
 settings = get_settings()
 
 
@@ -26,8 +26,17 @@ class WorkerRunner:
     number of jobs this process runs at once (`concurrency`). Claiming is
     cluster-aware -- before claiming from a queue we subtract that queue's
     currently-RUNNING/CLAIMED count (across *all* workers) from its
-    max_concurrency so a queue's configured limit holds cluster-wide, not
-    just per-worker.
+    max_concurrency, so the queue's configured limit applies across the
+    whole cluster rather than per-worker.
+
+    That cluster-wide cap is enforced **best-effort, not strictly**: the
+    capacity COUNT in `_claimable_capacity` and the claim in `claim_jobs`
+    are two separate statements, so N workers polling simultaneously can
+    each read the same free capacity and each claim against it. Overshoot
+    is bounded by (concurrent workers x per-poll claim limit), never
+    unbounded, and self-corrects on the next poll. A strict cap would need
+    a per-queue advisory lock or a counter row -- see "Known limitations"
+    in docs/DESIGN_DECISIONS.md for why that's deliberately out of scope.
     """
 
     def __init__(self, concurrency: int | None = None):
@@ -95,7 +104,13 @@ class WorkerRunner:
         return max(queue.max_concurrency - (in_flight.scalar() or 0), 0)
 
     async def _poll_once(self) -> list[Job]:
-        free_capacity = self.semaphore._value  # available local slots
+        # Derived from the in-flight task set rather than the semaphore's
+        # private `_value`. Besides not reaching into a private attribute,
+        # this is the more accurate number: `_value` only drops once a task
+        # actually acquires the semaphore, so a task that's been created but
+        # is still waiting for a slot wouldn't be counted, and we'd claim
+        # work we have no capacity for.
+        free_capacity = self.concurrency - len(self._in_flight)
         if free_capacity <= 0:
             return []
 
@@ -124,13 +139,25 @@ class WorkerRunner:
             # values so nothing touches a detached ORM instance later.
             async with AsyncSessionLocal() as db:
                 job = await db.get(Job, job_id)
+                if job is None:
+                    # The job was claimed, then its queue (or project/org)
+                    # was deleted before we got here -- ON DELETE CASCADE
+                    # took the row with it. Nothing to run and nothing to
+                    # record against; without this guard the next line
+                    # raises AttributeError on None.
+                    logger.warning("Job %s no longer exists (cascade-deleted after claim); skipping", job_id)
+                    return
+
                 execution = await start_execution(db, job, self.worker_id)
                 execution_id = execution.id
                 job_name, job_payload = job.name, dict(job.payload)
                 queue_result = await db.execute(
                     select(Queue).options(selectinload(Queue.retry_policy)).where(Queue.id == job.queue_id)
                 )
-                queue = queue_result.scalar_one()
+                queue = queue_result.scalar_one_or_none()
+                if queue is None:
+                    logger.warning("Queue for job %s disappeared mid-start; skipping", job_id)
+                    return
                 retry_policy_id = queue.retry_policy.id if queue.retry_policy else None
                 await db.commit()
 
