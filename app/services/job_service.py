@@ -14,6 +14,7 @@ from datetime import datetime, timedelta, timezone
 
 from croniter import croniter
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import (
@@ -60,16 +61,16 @@ async def create_job(
     """Create a single job row. Idempotent when idempotency_key is supplied
     and already present (unresolved) on the queue: returns the existing job
     instead of creating a duplicate.
+
+    The guarantee is enforced by a partial unique index (migration 0003),
+    not by the SELECT below -- the SELECT is only a fast path that avoids
+    raising in the common, uncontended case. Two concurrent callers with
+    the same key will both find nothing here and both attempt the INSERT;
+    the database rejects the loser, which then re-reads and returns the
+    winner's row. See `_find_live_job_by_key`.
     """
     if idempotency_key:
-        existing = await db.execute(
-            select(Job).where(
-                Job.queue_id == queue.id,
-                Job.idempotency_key == idempotency_key,
-                Job.status.notin_([JobStatus.CANCELLED]),
-            )
-        )
-        found = existing.scalar_one_or_none()
+        found = await _find_live_job_by_key(db, queue.id, idempotency_key)
         if found is not None:
             return found
 
@@ -103,9 +104,49 @@ async def create_job(
         max_retries_override=max_retries,
         retry_strategy_override=retry_strategy,
     )
-    db.add(job)
-    await db.flush()
+    if not idempotency_key:
+        db.add(job)
+        await db.flush()
+        return job
+
+    # Both the add and the flush go inside the SAVEPOINT so that losing the
+    # insert race rolls back just this statement. Adding the instance
+    # *before* opening the savepoint doesn't work: the failed flush then
+    # poisons the caller's whole transaction (PendingRollbackError) and the
+    # re-read below can't run.
+    try:
+        async with db.begin_nested():
+            db.add(job)
+            await db.flush()
+    except IntegrityError:
+        # No need to expunge `job` -- rolling back the SAVEPOINT already
+        # evicted the rejected pending instance from the session.
+        #
+        # Postgres blocks the duplicate INSERT until the other transaction
+        # commits, so by the time we're here the winner's row is committed
+        # and visible to this (READ COMMITTED) statement.
+        found = await _find_live_job_by_key(db, queue.id, idempotency_key)
+        if found is not None:
+            return found
+        raise  # unique violation from something other than the idempotency race
     return job
+
+
+async def _find_live_job_by_key(db: AsyncSession, queue_id: int, idempotency_key: str) -> Job | None:
+    """The lookup backing idempotent creation: an existing job on this queue
+    with this key that hasn't been cancelled. Kept in one place because it
+    has to stay in exact lockstep with the partial unique index's predicate
+    in migration 0003 -- if these two ever disagree, idempotency silently
+    breaks in one direction or the other.
+    """
+    result = await db.execute(
+        select(Job).where(
+            Job.queue_id == queue_id,
+            Job.idempotency_key == idempotency_key,
+            Job.status.notin_([JobStatus.CANCELLED]),
+        )
+    )
+    return result.scalar_one_or_none()
 
 
 async def create_batch(
@@ -184,6 +225,13 @@ async def start_execution(db: AsyncSession, job: Job, worker_id: int) -> JobExec
         attempt_number=job.attempt_count,
         worker_id=worker_id,
         status="running",
+        # Set explicitly (tz-aware) rather than leaning on the column's
+        # server_default: a server-generated value isn't populated on the
+        # instance until it's refreshed, and what came back could be naive,
+        # which is why the duration math below used to patch it with
+        # .replace(tzinfo=utc). Setting it here makes that patch unnecessary
+        # and keeps this consistent with job.started_at above.
+        started_at=datetime.now(timezone.utc),
     )
     db.add(execution)
     await db.flush()
@@ -195,7 +243,7 @@ async def complete_execution(db: AsyncSession, job: Job, execution: JobExecution
     execution.status = "succeeded"
     execution.finished_at = now
     execution.result = result
-    execution.duration_ms = int((now - execution.started_at.replace(tzinfo=timezone.utc)).total_seconds() * 1000) if execution.started_at else None
+    execution.duration_ms = int((now - execution.started_at).total_seconds() * 1000) if execution.started_at else None
 
     job.status = JobStatus.COMPLETED
     job.completed_at = now
@@ -214,7 +262,7 @@ async def fail_execution(
     execution.status = "failed"
     execution.finished_at = now
     execution.error = error
-    execution.duration_ms = int((now - execution.started_at.replace(tzinfo=timezone.utc)).total_seconds() * 1000) if execution.started_at else None
+    execution.duration_ms = int((now - execution.started_at).total_seconds() * 1000) if execution.started_at else None
 
     strategy, max_retries, base_delay, multiplier, max_delay = _effective_retry_params(job, retry_policy)
 

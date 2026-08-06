@@ -1,9 +1,9 @@
 """
-SQLAlchemy ORM models for the Codity distributed job scheduler.
+SQLAlchemy ORM models for the distributed job scheduler.
 
-Entity list (per assignment spec): Users, Organizations, Projects, Queues,
-Jobs, Job Executions, Retry Policies, Workers, Worker Heartbeats, Job Logs,
-Scheduled Jobs, Dead Letter Queue entries.
+Entities: Users, Organizations, Projects, Queues, Jobs, Job Executions,
+Retry Policies, Workers, Worker Heartbeats, Job Logs, Scheduled Jobs,
+Dead Letter Queue entries.
 
 Design notes:
 - Integer surrogate PKs everywhere for compact indexes and cheap FK joins.
@@ -31,6 +31,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -294,7 +295,19 @@ class Job(Base):
         # Speeds up the worker's claim query: WHERE queue_id=? AND status IN (queued, scheduled) AND run_at <= now()
         # ORDER BY priority DESC, run_at ASC
         Index("ix_jobs_claim_lookup", "queue_id", "status", "run_at"),
-        Index("ix_jobs_idempotency", "queue_id", "idempotency_key"),
+        # Partial UNIQUE index, not a plain one: this is what actually makes
+        # create_job's idempotency guarantee hold under concurrency (a
+        # non-unique index lets two simultaneous requests both SELECT
+        # nothing and both INSERT). Partial because the lookup deliberately
+        # ignores CANCELLED jobs -- re-submitting a key whose previous job
+        # was cancelled is allowed. See migration 0003.
+        Index(
+            "ix_jobs_idempotency_unique",
+            "queue_id",
+            "idempotency_key",
+            unique=True,
+            postgresql_where=text("idempotency_key IS NOT NULL AND status <> 'cancelled'"),
+        ),
     )
 
 
