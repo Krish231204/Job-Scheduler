@@ -281,6 +281,61 @@ alternative -- giving each worker a static fixed share of a queue's
 concurrency -- avoids that query but breaks down as soon as workers scale up
 or down, so the extra read felt worth it.
 
+It is enforced *best-effort*, not strictly -- see "Known limitations" below.
+
+## Known limitations
+
+Four properties this system does **not** guarantee. All four are real, all
+four are known, and none of them are fixed, because fixing them properly
+costs materially more than the failure modes justify at this scale. They're
+written down rather than quietly left in the code because a limitation you
+can name is an engineering decision, and one you can't is a bug waiting to
+surprise you in production.
+
+**1. Queue capacity is best-effort under concurrent claim.**
+`WorkerRunner._claimable_capacity()` issues a `COUNT` and `claim_jobs()`
+issues the claim -- two statements, no lock spanning them. N workers polling
+at the same instant can each read the same free capacity and each claim
+against it, so a queue configured for `max_concurrency=5` can transiently
+run more. The overshoot is bounded by (concurrent workers x per-poll claim
+limit) and self-corrects on the next poll -- it is not unbounded drift. A
+strict cap needs a per-queue Postgres advisory lock (serializing all claims
+for that queue, costing throughput) or a maintained counter row (another
+write on the hot path, and a reconciliation problem when a worker dies
+mid-job). Neither is worth it here: the practical consequence is briefly
+exceeding a soft concurrency target, not lost or duplicated work --
+`SELECT ... FOR UPDATE SKIP LOCKED` still guarantees no job is ever claimed
+twice, which is the property that actually matters.
+
+**2. Exactly one scheduler instance is assumed, and nothing enforces it.**
+`claim_jobs`, `promote_retrying_jobs`, and `materialize_due_scheduled_jobs`
+all take `with_for_update(skip_locked=True)`, so they're safe to run
+concurrently. `detect_stale_workers` does not -- two schedulers running at
+once could both sweep the same crashed worker and double-requeue its jobs.
+There is no leader election; "run exactly one scheduler" is enforced by
+deployment convention (`docker-compose.yml` runs a single replica) rather
+than by the database. Proper HA needs a Postgres advisory lock around the
+tick or an external leader-election mechanism.
+
+**3. `promote_retrying_jobs` is unbounded.** It locks *every* eligible
+`RETRYING` row in a single transaction with no `.limit()`. Normal operation
+promotes a handful per tick, but a large simultaneous failure -- an
+outage that dead-letters or retries thousands of jobs at once -- would open
+one long transaction holding many row locks. `claim_jobs` uses
+`skip_locked`, so workers wouldn't block on it, but the transaction itself
+would be unpleasantly large. A `.limit()` with a follow-up tick would fix
+this in about three lines; it's unfixed only because it has never been the
+bottleneck at any scale this has actually run at.
+
+**4. The poll loop is O(queues) per worker per tick.** `_poll_once()`
+selects every unpaused queue with no filter or limit, then issues one
+`COUNT` per queue to compute capacity. At 10 queues and 3 workers that's 30
+cheap indexed counts per second -- fine. At 10,000 queues it is not. The
+fix is worker-to-queue affinity (each worker subscribes to a subset) or a
+single aggregate `GROUP BY queue_id` count instead of N separate ones. The
+current design deliberately optimizes for a small number of busy queues,
+which is what this system is built for.
+
 ## Server-rendered dashboard over a JS framework
 
 Per project scope, the dashboard is Jinja2 templates with small islands of
@@ -400,7 +455,7 @@ After these fixes, the full stack has been confirmed working end-to-end by
 hand (register → submit an immediate job → watch it complete; submit a
 `simulate: fail` job → watch exponential backoff through 6 attempts → land
 in `dead_letter` → retry it from the dashboard) and by the automated suite
-(`21 passed` against a live Postgres `codity_test` database, including the
+(`21 passed` against a live Postgres `jobsched_test` database, including the
 concurrent-claim test proving no two workers ever claim the same job under
 real contention). This is the strongest evidence available short of a
 second engineer's independent review.

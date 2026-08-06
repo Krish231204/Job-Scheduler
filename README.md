@@ -11,6 +11,15 @@ Stack: **FastAPI + SQLAlchemy (async) + PostgreSQL** for the API, a
 process** for time-based transitions, and **Jinja2** server-rendered pages
 for the dashboard.
 
+> **Origin:** this started as a take-home assignment and has been extended
+> since — a security/hardening pass (org-scoped authorization, RBAC on queue
+> config, rate limiting, liveness/readiness split), WebSocket live updates
+> on the queue dashboard, AI-generated dead-letter failure summaries, and CI
+> with linting plus dependency vulnerability scanning. See
+> [docs/DESIGN_DECISIONS.md](docs/DESIGN_DECISIONS.md) for what changed and
+> why, including a **Known limitations** section covering the guarantees
+> this system deliberately does *not* make.
+
 ## Repository layout
 
 ```
@@ -140,7 +149,7 @@ creating new queues requires the `owner` or `admin` role.
 ```bash
 pip install -r requirements.txt
 docker compose up -d db          # or point TEST_DATABASE_URL at any Postgres
-export TEST_DATABASE_URL=postgresql+asyncpg://codity:codity@localhost:5432/codity_test
+export TEST_DATABASE_URL=postgresql+asyncpg://jobsched:jobsched@localhost:5432/jobsched_test
 pytest
 ```
 
@@ -166,7 +175,7 @@ than a cherry-picked one is deliberate.
 **Verification status:** this has been run end-to-end via
 `docker compose up --build` against real Postgres -- registration, job
 submission (immediate + a deliberately-failing job to watch the
-retry/dead-letter path), and the full `pytest` suite (21/21 passing,
+retry/dead-letter path), and the full `pytest` suite (31/31 passing,
 including the concurrent-claim test) all confirmed working. A few real bugs
 turned up only once it was actually executed (an enum serialization
 mismatch, a missing `email-validator` dependency, a `passlib`/`bcrypt`
