@@ -83,7 +83,8 @@ pinned via `fastapi==0.115.0`, several CVEs only fixed in `starlette>=1.0`),
 `uvicorn` to `0.51.0`, `python-jose` to `3.4.0`, `jinja2` to `3.1.6`,
 `python-multipart` to `0.0.32`, `python-dotenv` to `1.2.2`, and `pytest`/
 `pytest-asyncio` to `9.0.3`/`1.4.0` -- then re-ran the full test suite
-against real Postgres to confirm nothing broke (`30/30` still passing).
+against real Postgres to confirm nothing broke (all 30 tests still passing;
+the suite has since grown to 33).
 That last step mattered: bumping a web framework by ~24 minor versions on
 faith would be reckless without the ability to actually verify it, and this
 codebase's existing test suite (particularly `test_api_auth.py`, which
@@ -282,11 +283,63 @@ matches how most people mentally model "retry N times," but it's worth
 calling out because it's the kind of off-by-one that's easy to get backwards
 in either the implementation or the tests.
 
+## Idempotency was claimed but not enforced (fixed 2026-08-07)
+
+The section below has always said `idempotency_key` "prevents creating a
+duplicate job." For most of this project's life that was **not true under
+concurrency**, and the docstring on `create_job` asserted it anyway.
+
+`create_job` did a SELECT for an existing key, then an INSERT if it found
+nothing — with only a *non-unique* index behind it. Two requests arriving
+together both ran the SELECT, both found nothing, and both inserted. The
+window is small but entirely reachable: a client retrying a POST after a
+timeout is the exact scenario the feature exists for, and a retry storm
+produces precisely this concurrency.
+
+The fix is a **partial unique index** (migration `0003`) rather than a plain
+`UniqueConstraint(queue_id, idempotency_key)`:
+
+```sql
+CREATE UNIQUE INDEX ix_jobs_idempotency_unique ON jobs (queue_id, idempotency_key)
+WHERE idempotency_key IS NOT NULL AND status <> 'cancelled'::job_status
+```
+
+Partial because the lookup deliberately ignores CANCELLED jobs — a flat
+constraint would have silently turned idempotency keys into permanently
+burned single-use tokens, changing behavior while "fixing" a bug. The index
+predicate and the query in `_find_live_job_by_key()` have to stay in exact
+lockstep; that's why the query lives in one named function instead of being
+inlined, and why both carry comments pointing at each other.
+
+`create_job` now flushes inside a **SAVEPOINT** and, on `IntegrityError`,
+re-reads and returns the winner's row. This works because Postgres blocks
+the duplicate INSERT until the competing transaction commits — so by the
+time the loser sees the error, the winner's row is guaranteed committed and
+visible to the next statement. The SELECT that remains is now only a fast
+path to avoid raising in the uncontended case, not the mechanism.
+
+Two things worth recording, both found by *running* this rather than
+reasoning about it:
+
+1. **The first version of the test was worthless.** It used plain
+   `asyncio.gather` and passed even with the unique index removed — the
+   tasks serialized, each finishing its insert before the next one looked
+   up, so the race never happened. It now uses an `asyncio.Barrier` to hold
+   every caller until all of them are past the lookup. Verified it fails
+   with 8 duplicate rows against a non-unique index and passes against the
+   real one. A test that cannot fail proves nothing.
+2. **`db.add()` has to be inside the savepoint.** With the instance added
+   before opening it, the failed flush poisons the enclosing transaction
+   (`PendingRollbackError`) and the recovery re-read can't run at all.
+
+See `tests/test_idempotency_concurrency.py`, which also locks in that a key
+becomes reusable once its job is cancelled.
+
 ## Idempotency is a job-level concern, not a framework guarantee
 
 `Job.idempotency_key` (scoped per queue) prevents *creating* a duplicate job
 if the same request is submitted twice (e.g. a client retrying a POST after
-a timeout). It does not guarantee a job's *handler* only runs once end to
+a timeout) — enforced at the database level, see the section above. It does not guarantee a job's *handler* only runs once end to
 end -- if a worker crashes after the handler's side effects have taken
 place but before the DB is updated to `COMPLETED`, the scheduler's
 stale-worker sweep will requeue the job and it will run again. This is the

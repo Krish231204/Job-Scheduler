@@ -159,15 +159,24 @@ tests need real Postgres, because they exercise `SELECT ... FOR UPDATE SKIP
 LOCKED` row-locking semantics that SQLite doesn't replicate; they're
 skipped automatically (not failed) if `TEST_DATABASE_URL` isn't reachable.
 
-**Coverage:** `pip install pytest-cov && pytest --cov=app --cov=worker --cov=scheduler --cov-report=term-missing`.
-Router/service code sits around 60-90%; `worker/` and `scheduler/` show 0%
-from `pytest` alone because their concurrency/lifecycle behavior is
-exercised through `tests/test_lifecycle.py` and
-`tests/test_claim_concurrency.py` calling the same service functions
-directly, not through the worker/scheduler process entrypoints themselves
-— those are verified by actually running them (see "Verification status"
-below), not by a coverage number. Reporting the real percentage here rather
-than a cherry-picked one is deliberate.
+**Coverage:** `pip install pytest-cov && pytest --cov=app --cov=worker --cov=scheduler --cov-report=term-missing`
+— currently **58% overall**, and deliberately uneven rather than uniformly
+padded. `models.py` and `schemas.py` sit at 100%/93% and the pure logic in
+`services/retry.py` at 93%, because those are cheap and valuable to cover.
+Routers range from 31% to 75%: the tests that exist for them target
+authorization and tenant isolation specifically (`tests/test_api_auth.py`),
+not every branch of every handler. `worker/` and `scheduler/` report 0%
+because their lifecycle and concurrency behavior is exercised through
+`tests/test_lifecycle.py`, `tests/test_claim_concurrency.py` and
+`tests/test_idempotency_concurrency.py` calling the same service functions
+directly, rather than through the process entrypoints — those are verified
+by actually running them (see "Verification status" below), which a
+coverage number wouldn't capture either way.
+
+Reporting the real spread rather than one flattering figure is deliberate:
+the tests here are aimed at the two things that are genuinely hard to get
+right in this system (concurrent claiming, and authorization), not at
+maximizing a percentage.
 
 **Lint & dependency scanning:** `pip install ruff pip-audit && ruff check .
 && pip-audit -r requirements.txt` (also run in CI on every push/PR).
@@ -175,8 +184,9 @@ than a cherry-picked one is deliberate.
 **Verification status:** this has been run end-to-end via
 `docker compose up --build` against real Postgres -- registration, job
 submission (immediate + a deliberately-failing job to watch the
-retry/dead-letter path), and the full `pytest` suite (31/31 passing,
-including the concurrent-claim test) all confirmed working. A few real bugs
+retry/dead-letter path), and the full `pytest` suite (33/33 passing,
+including the concurrent-claim and concurrent-idempotency tests) all
+confirmed working. A few real bugs
 turned up only once it was actually executed (an enum serialization
 mismatch, a missing `email-validator` dependency, a `passlib`/`bcrypt`
 version incompatibility) and are documented, with fixes, in

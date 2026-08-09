@@ -94,9 +94,16 @@ directly (a bare Job row can't keep firing on a cron):
 {"name": "import-row", "job_type": "batch", "batch_items": [{"row": 1}, {"row": 2}]}
 ```
 
-All job-creation requests also accept optional `priority`, `idempotency_key`
-(dedupes creation within the queue), `max_retries`, and `retry_strategy` to
-override the queue's default retry policy for that one job.
+All job-creation requests also accept optional `priority`, `idempotency_key`,
+`max_retries`, and `retry_strategy` to override the queue's default retry
+policy for that one job.
+
+**`idempotency_key` semantics:** submitting the same key twice on the same
+queue returns the *existing* job (HTTP 201 with the original job's `id`)
+rather than creating a second one — safe for a client retrying a POST after
+a timeout. Enforced by a database-level partial unique index, so it holds
+even for requests arriving simultaneously. A key becomes reusable once its
+job is cancelled; any other status (including `dead_letter`) keeps it taken.
 
 ## Workers
 

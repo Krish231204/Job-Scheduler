@@ -144,8 +144,15 @@ clearer than juggling nullable columns on two different tables.
   (`WHERE queue_id IN (...) AND status IN (queued, scheduled) AND run_at <=
   now() ORDER BY ... LIMIT n`). Without it, every poll from every worker is a
   full table scan on the busiest table in the system.
-- `ix_jobs_idempotency (queue_id, idempotency_key)` — supports the
-  idempotent-creation check in `create_job` without a full scan.
+- `ix_jobs_idempotency_unique (queue_id, idempotency_key)`, **UNIQUE and
+  partial** (`WHERE idempotency_key IS NOT NULL AND status <> 'cancelled'`)
+  — this one is a correctness constraint, not just an access path. It's what
+  actually enforces idempotent creation: `create_job` does a lookup then an
+  insert, and without uniqueness two concurrent requests carrying the same
+  key both find nothing and both insert. Partial so that cancelling a job
+  frees its key for reuse, and so the index skips the many rows that don't
+  use idempotency at all. See migration `0003` and
+  `docs/DESIGN_DECISIONS.md` → "Idempotency was claimed but not enforced".
 - `ix_scheduled_jobs_next_run (next_run_at)` — the scheduler's due-check
   query.
 - `ix_worker_heartbeats_timestamp` — supports trimming/graphing heartbeat
