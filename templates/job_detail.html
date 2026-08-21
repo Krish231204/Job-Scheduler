@@ -1,27 +1,11 @@
 {% extends "base.html" %}
 {% block title %}Job #{{ job.id }}{% endblock %}
-{% block refresh %}{% if job.status.value in ["queued", "scheduled", "claimed", "running", "retrying"] %}<meta http-equiv="refresh" content="5">{% endif %}{% endblock %}
 {% block content %}
 <a class="breadcrumb" href="/dashboard/queues/{{ job.queue_id }}">&larr; <span>Back to queue</span></a>
-<h1>Job #{{ job.id }}: {{ job.name }}</h1>
-<span class="badge status-{{ job.status.value }}">{{ job.status.value }}</span>
+<h1><span class="mono">#{{ job.id }}</span> {{ job.name }}</h1>
 
-<div class="card">
-    <h2>Details</h2>
-    <table class="kv">
-        <tr><th>Type</th><td>{{ job.job_type.value }}</td></tr>
-        <tr><th>Attempts</th><td>{{ job.attempt_count }}</td></tr>
-        <tr><th>Run at</th><td>{{ job.run_at }}</td></tr>
-        <tr><th>Claimed by worker</th><td>{{ job.claimed_by or "-" }}</td></tr>
-        <tr><th>Started</th><td>{{ job.started_at or "-" }}</td></tr>
-        <tr><th>Completed</th><td>{{ job.completed_at or "-" }}</td></tr>
-        <tr><th>Next retry at</th><td>{{ job.next_retry_at or "-" }}</td></tr>
-        <tr><th>Batch ID</th><td>{{ job.batch_id or "-" }}</td></tr>
-        <tr><th>Payload</th><td><pre>{{ job.payload }}</pre></td></tr>
-    </table>
-    {% if job.status.value in ["dead_letter", "failed", "cancelled"] %}
-    <button type="button" onclick="fetch('/jobs/{{ job.id }}/retry', {method:'POST', credentials:'include'}).then(()=>location.reload())">Retry job</button>
-    {% endif %}
+<div id="job-live">
+{% include "_job_live_fragment.html" %}
 </div>
 
 {% if job.status.value == "dead_letter" %}
@@ -62,37 +46,24 @@ async function getAiSummary() {
 </script>
 {% endif %}
 
-<div class="card">
-    <h2>Execution history</h2>
-    <div class="table-wrap">
-    <table class="table">
-        <thead><tr><th>Attempt</th><th>Status</th><th>Worker</th><th>Started</th><th>Duration</th><th>Error</th></tr></thead>
-        <tbody>
-        {% for e in job.executions %}
-            <tr>
-                <td>{{ e.attempt_number }}</td>
-                <td><span class="badge status-{{ e.status.value }}">{{ e.status.value }}</span></td>
-                <td>{{ e.worker_id or "-" }}</td>
-                <td>{{ e.started_at }}</td>
-                <td>{{ e.duration_ms }}ms</td>
-                <td>{{ e.error or "-" }}</td>
-            </tr>
-        {% else %}
-            <tr><td colspan="6" class="muted">No executions yet.</td></tr>
-        {% endfor %}
-        </tbody>
-    </table>
-    </div>
-</div>
-
-<div class="card">
-    <h2>Logs</h2>
-    <ul class="log-list">
-    {% for log in job.logs %}
-        <li class="log-{{ log.level.value }}"><span class="muted">{{ log.timestamp }}</span> [{{ log.level.value }}] {{ log.message }}</li>
-    {% else %}
-        <li class="muted">No logs yet.</li>
-    {% endfor %}
-    </ul>
-</div>
+{% if job.status.value in ["queued", "scheduled", "claimed", "running", "retrying"] %}
+<script>
+// Live-update the details/executions/logs while the job is active. When it
+// reaches a terminal status, reload the full page once so status-dependent
+// chrome rendered outside the live region (retry button state, the
+// AI-summary card for dead-lettered jobs) appears without re-implementing
+// it client-side.
+document.addEventListener("DOMContentLoaded", function () {
+    const TERMINAL = ["completed", "failed", "dead_letter", "cancelled"];
+    connectLive("/ws/jobs/{{ job.id }}", "job-live", {
+        onUpdate: function (region) {
+            const root = region.firstElementChild;
+            if (root && TERMINAL.includes(root.dataset.status)) {
+                location.reload();
+            }
+        },
+    });
+});
+</script>
+{% endif %}
 {% endblock %}

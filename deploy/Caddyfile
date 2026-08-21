@@ -1,0 +1,7 @@
+# Reverse proxy with automatic HTTPS (Let's Encrypt) for the optional
+# `https` profile in docker-compose.prod.yml. DOMAIN comes from .env.prod.
+# WebSockets are proxied transparently -- no extra config needed.
+{$DOMAIN} {
+	reverse_proxy api:8000
+	encode gzip
+}

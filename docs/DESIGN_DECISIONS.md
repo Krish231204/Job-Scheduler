@@ -456,6 +456,18 @@ connection time -- so revoking access mid-connection (e.g. removing a
 member from the org) takes effect on the next push, not just the next
 reconnect.
 
+**2026-08-21 update:** this pattern was generalized to the whole dashboard
+(see "Upgrade & deployment pass" below). The auth + render-loop mechanics
+described here now live in one shared helper (`_ws_live_loop` in
+`app/routers/dashboard.py`) behind four endpoints -- `/ws/queues/{id}`,
+`/ws/projects/{id}`, `/ws/jobs/{id}`, `/ws/workers` -- with one shared
+client (`static/live.js`). The last `<meta refresh>` pages are gone. The
+job-detail endpoint adds one wrinkle: while a job is active the fragment
+(details/executions/logs) updates in place, and when it reaches a terminal
+status the page reloads once, because the chrome outside the live region
+(retry button, the AI-summary card) is status-dependent and re-implementing
+that logic client-side is exactly what this design avoids.
+
 `ws_queue_updates` takes `db: AsyncSession = Depends(get_db)` rather than
 opening a session directly, which matters for two reasons: it's what makes
 `app.dependency_overrides[get_db]` work in tests the same way it does for
@@ -489,8 +501,8 @@ automatically.
 
 ## What's deliberately out of scope (bonus features not implemented)
 
-Of the assignment's bonus list, rate limiting, WebSocket live updates (queue
-detail page only -- see above), RBAC (queue-config actions require
+Of the assignment's bonus list, rate limiting, WebSocket live updates (now
+the whole dashboard -- see above), RBAC (queue-config actions require
 owner/admin -- see the hardening-pass section above), and AI-generated
 failure summaries are now implemented. Still out of scope: workflow
 dependencies (job B waits on job A), distributed locking beyond
@@ -501,6 +513,63 @@ the core requirements and reliability characteristics the grading rubric
 weights most heavily (architecture, DB design, backend engineering,
 concurrency/reliability) rather than spreading effort further across the
 remaining bonus list.
+
+## Upgrade & deployment pass (2026-08-21)
+
+A modernization pass with four strands, each verified against the full
+test suite (36/36 passing afterward, on Python 3.11 and 3.13):
+
+**Dependencies to current releases; Python 3.13.** Every pin moved to the
+latest release (FastAPI 0.141, SQLAlchemy 2.0.52, Pydantic 2.13, Alembic
+1.19, anthropic 1.0, croniter 6.x, httpx 0.28, ...), base images and CI to
+Python 3.13, `pip-audit` clean. Two changes were more than a version bump:
+
+- *passlib was retired, not upgraded.* passlib 1.7.4 is unmaintained and
+  incompatible with bcrypt >= 4.1 (the old pin `bcrypt==4.0.1` existed only
+  to protect it). `app/security.py` now calls `bcrypt` directly
+  (currently 5.0.0). The explicit 72-byte truncation preserves what passlib
+  did silently, so every already-stored hash keeps verifying -- and newer
+  bcrypt releases reject longer input instead of truncating, so without it
+  long passwords would error rather than log in.
+- *anthropic 0.x → 1.0* is a major with removed API surface; the single
+  call site (`ai_summary.py`) used none of it, and the model id moved to
+  the undated `claude-haiku-4-5` alias.
+
+**Throughput/latency metrics + a reproducible benchmark.** `queue_stats`
+now reports jobs/sec and p50/p95/p99 execution latency over a 5-minute
+window (Postgres `percentile_cont`, one round trip; measured over
+`JobExecution.duration_ms` so a job that succeeded on attempt 3 contributes
+its final attempt's runtime, not the backoff waits). `scripts/benchmark.py`
+runs a fixed, deterministic workload (no randomness, sequential idempotency
+keys, pinned poll interval) against a dedicated bench database using the
+real `WorkerRunner` claim path, and prints submission jobs/sec, drain
+jobs/sec, and latency percentiles -- the README's "Performance" section
+records the measured numbers, including the honest ones: with a 0 ms
+handler the framework itself tops out around ~126 jobs/s per this
+hardware's Postgres round-trip budget, and the idempotency guarantee costs
+about a third of raw submission throughput.
+
+**Dashboard: live everywhere + redesign.** The fragments-over-WebSocket
+design was generalized to every page (see the WebSocket section above) and
+the visuals rebuilt: light/dark themes as CSS custom-property tokens (OS
+preference by default, explicit toggle persisted in localStorage, dark
+values declared under both the media query and the `data-theme` stamp so
+the toggle wins in both directions), system mono as the data voice for
+machine values, stat tiles for the new metrics, and Chart.js upgraded to
+4.5.1 and vendored into `static/vendor/` -- the previous CDN `<script>` was
+a silent external dependency that would break the chart on any deployment
+without third-party egress, and pinning-by-URL is also how supply-chain
+surprises happen.
+
+**A real deployment target.** `docker-compose.prod.yml` +
+`docs/DEPLOY_EC2.md` document a complete single-host deployment on the AWS
+free tier: per-service memory caps sized for 1 GB of RAM, secrets in
+`.env.prod`, Postgres unpublished, and an opt-in Caddy profile for
+automatic HTTPS. One code change fell out of walking that path honestly:
+with `ENVIRONMENT=production` the session cookie is `Secure`, so on a
+bare-IP HTTP deployment dashboard login silently fails -- `COOKIE_SECURE`
+now exists as an explicit, documented opt-out rather than an undocumented
+footgun (secure-by-default is unchanged).
 
 ## Verification history
 

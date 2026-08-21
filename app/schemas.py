@@ -118,6 +118,13 @@ class QueueStats(BaseModel):
     cancelled: int
     avg_duration_ms: float | None = None
     throughput_last_hour: int = 0
+    # Current-rate metrics over the last RATE_WINDOW_SECONDS (see
+    # app/services/stats.py): completions per second, and latency
+    # percentiles of successful execution durations.
+    jobs_per_second: float = 0.0
+    p50_ms: float | None = None
+    p95_ms: float | None = None
+    p99_ms: float | None = None
 
 
 # --------------------------------------------------------------------------

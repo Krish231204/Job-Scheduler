@@ -1,9 +1,9 @@
 from datetime import datetime, timedelta, timezone
 
+import bcrypt
 import jwt
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordBearer
-from passlib.context import CryptContext
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -12,20 +12,31 @@ from app.database import get_db
 from app.models import User
 
 settings = get_settings()
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 # auto_error=False so requests carrying only the dashboard's session cookie
 # (no Authorization header) don't get rejected before we can check the
 # cookie ourselves in get_current_user below.
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login", auto_error=False)
 SESSION_COOKIE_NAME = "jobsched_session"
 
+# bcrypt operates on at most 72 bytes of input. passlib (which this module
+# used before it was retired -- unmaintained, and incompatible with
+# bcrypt >= 4.1) silently truncated longer passwords, so existing hashes
+# were produced from the first 72 bytes. Truncating here keeps every stored
+# hash verifiable and newer bcrypt releases from raising on long input.
+_BCRYPT_MAX_BYTES = 72
+
 
 def hash_password(password: str) -> str:
-    return pwd_context.hash(password)
+    return bcrypt.hashpw(password.encode()[:_BCRYPT_MAX_BYTES], bcrypt.gensalt()).decode()
 
 
 def verify_password(plain: str, hashed: str) -> bool:
-    return pwd_context.verify(plain, hashed)
+    try:
+        return bcrypt.checkpw(plain.encode()[:_BCRYPT_MAX_BYTES], hashed.encode())
+    except ValueError:
+        # Malformed/legacy hash in the database -- treat as non-matching
+        # rather than turning a login attempt into a 500.
+        return False
 
 
 def create_access_token(subject: str) -> str:

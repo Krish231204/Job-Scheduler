@@ -56,7 +56,7 @@ async def summarize_failure(job_name: str, attempt_count: int, errors: list[str]
         client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
         error_text = "\n".join(errors[-5:]) or "no error message was recorded"
         message = await client.messages.create(
-            model="claude-haiku-4-5-20251001",
+            model="claude-haiku-4-5",
             max_tokens=200,
             messages=[
                 {

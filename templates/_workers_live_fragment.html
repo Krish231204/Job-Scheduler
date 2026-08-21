@@ -1,0 +1,24 @@
+<div class="card">
+    <h2>Workers <span class="live-indicator">live</span></h2>
+    <div class="table-wrap">
+    <table class="table">
+        <thead><tr><th>ID</th><th>Name</th><th>Host</th><th>PID</th><th>Status</th><th>Concurrency</th><th>Started</th><th>Last seen</th></tr></thead>
+        <tbody>
+        {% for w in workers %}
+            <tr>
+                <td class="mono">#{{ w.id }}</td>
+                <td>{{ w.name }}</td>
+                <td class="mono">{{ w.hostname }}</td>
+                <td class="mono">{{ w.pid }}</td>
+                <td><span class="badge status-{{ w.status.value if w.status.value != 'offline' and w.last_seen_at >= online_cutoff else 'offline' }}">{{ w.status.value }}</span></td>
+                <td>{{ w.concurrency }}</td>
+                <td class="mono">{{ w.started_at | ts }}</td>
+                <td class="mono">{{ w.last_seen_at | ts }}</td>
+            </tr>
+        {% else %}
+            <tr><td colspan="8" class="muted">No workers registered. Start one with <code>python -m worker.main</code>.</td></tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    </div>
+</div>
