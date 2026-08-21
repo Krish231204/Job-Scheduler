@@ -53,7 +53,7 @@ def _set_session_cookie(response, token: str) -> None:
         token,
         httponly=True,
         samesite="lax",
-        secure=settings.environment == "production",
+        secure=settings.effective_cookie_secure,
         max_age=60 * 60 * 24,
     )
 
