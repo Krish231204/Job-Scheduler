@@ -3,32 +3,15 @@
 {% block content %}
 <a class="breadcrumb" href="/dashboard">&larr; <span>Back to projects</span></a>
 <h1>{{ project.name }}</h1>
-<p class="muted">{{ project.description }}</p>
+{% if project.description %}<p class="muted">{{ project.description }}</p>{% endif %}
 
-<h2>Queues</h2>
-<div class="table-wrap">
-<table class="table">
-    <thead>
-        <tr><th>Name</th><th>Priority</th><th>Concurrency</th><th>Paused</th><th>Queued</th><th>Running</th><th>Failed/Retrying</th><th>Dead letter</th><th>Throughput/hr</th></tr>
-    </thead>
-    <tbody>
-    {% for q in queues %}
-        {% set s = stats[q.id] %}
-        <tr onclick="window.location='/dashboard/queues/{{ q.id }}'" class="clickable-row">
-            <td>{{ q.name }}{% if q.is_paused %} <span class="badge status-offline">paused</span>{% endif %}</td>
-            <td>{{ q.priority }}</td>
-            <td>{{ q.max_concurrency }}</td>
-            <td>{{ "Yes" if q.is_paused else "No" }}</td>
-            <td>{{ s.queued + s.scheduled }}</td>
-            <td>{{ s.claimed + s.running }}</td>
-            <td>{{ s.failed }}</td>
-            <td>{{ s.dead_letter }}</td>
-            <td>{{ s.throughput_last_hour }}</td>
-        </tr>
-    {% else %}
-        <tr><td colspan="9" class="muted">No queues yet. Create one via POST /projects/{{ project.id }}/queues.</td></tr>
-    {% endfor %}
-    </tbody>
-</table>
+<div id="queues-live">
+{% include "_project_queues_fragment.html" %}
 </div>
+
+<script>
+document.addEventListener("DOMContentLoaded", function () {
+    connectLive("/ws/projects/{{ project.id }}", "queues-live");
+});
+</script>
 {% endblock %}

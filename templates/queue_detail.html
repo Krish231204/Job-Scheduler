@@ -10,7 +10,7 @@
 
 <div class="card">
     <h2>Throughput &amp; health (last 24h)</h2>
-    <canvas id="healthChart" height="80"></canvas>
+    <div class="chart-wrap"><canvas id="healthChart"></canvas></div>
 </div>
 
 <div class="card">
@@ -47,8 +47,8 @@
         {% for sj in scheduled_jobs %}
             <tr>
                 <td>{{ sj.name }}</td><td>{{ sj.job_name }}</td>
-                <td>{{ sj.cron_expression or "one-off" }}</td>
-                <td>{{ sj.next_run_at }}</td>
+                <td class="mono">{{ sj.cron_expression or "one-off" }}</td>
+                <td class="mono">{{ sj.next_run_at | ts }}</td>
                 <td>{{ "Yes" if sj.is_active else "No" }}</td>
             </tr>
         {% else %}
@@ -146,55 +146,19 @@ function postAndReload(url) {
     fetch(url, { method: "POST", credentials: "include" }).then(() => window.location.reload());
 }
 
-// postJob (no reload) is used from inside #live-region, which the
-// WebSocket below re-renders on its own every couple seconds anyway --
-// reloading the whole page on click would just fight with that.
+// postJob (no reload) is used from inside #live-region, which the WebSocket
+// re-renders on its own every couple seconds anyway -- reloading the whole
+// page on click would just fight with that.
 function postJob(url) {
     fetch(url, { method: "POST", credentials: "include" });
 }
 
-// ---------------------------------------------------------------------
-// Live updates: the server re-renders the stats + job explorer fragment
-// (templates/_queue_live_fragment.html) and pushes the resulting HTML
-// over a WebSocket every couple seconds; the client just swaps
-// #live-region's innerHTML in place. Deliberately not sending JSON and
-// re-implementing the same row/badge markup in JS -- one rendering
-// implementation (Jinja2, server-side), consistent with the rest of this
-// dashboard's "thin JS islands" approach (see docs/DESIGN_DECISIONS.md).
-// ---------------------------------------------------------------------
-
-(function connectLiveUpdates() {
-    const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+// Live stats + job explorer (server-rendered fragment over WebSocket --
+// see static/live.js and docs/DESIGN_DECISIONS.md).
+document.addEventListener("DOMContentLoaded", function () {
     const qs = {{ (('?status_filter=' + status_filter) if status_filter else '') | tojson }};
-    const url = `${proto}//${window.location.host}/ws/queues/{{ queue.id }}${qs}`;
-    const liveIndicator = () => document.getElementById("live-indicator");
-
-    function showLiveIndicator() {
-        const el = liveIndicator();
-        if (el) el.style.display = "inline-block";
-    }
-
-    function connect() {
-        const ws = new WebSocket(url);
-        ws.onopen = showLiveIndicator;
-        ws.onmessage = (event) => {
-            // The fragment being swapped in contains its own #live-indicator
-            // (hidden by default, for the very first server-rendered page
-            // load before any socket has connected) -- re-show it after
-            // every swap, not just once on open, or it reverts to hidden
-            // each time this replaces the node that onopen made visible.
-            document.getElementById("live-region").innerHTML = event.data;
-            showLiveIndicator();
-        };
-        ws.onclose = () => {
-            // Reconnect with backoff rather than leaving the page silently
-            // stale forever (e.g. after the server restarts/redeploys).
-            setTimeout(connect, 3000);
-        };
-        ws.onerror = () => ws.close();
-    }
-    connect();
-})();
+    connectLive("/ws/queues/{{ queue.id }}" + qs, "live-region");
+});
 
 // ---------------------------------------------------------------------
 // "Submit a job" form: a friendly field-by-field builder by default,
@@ -320,35 +284,75 @@ async function submitJobForm(evt) {
 // Start with one empty payload field visible so the form doesn't look broken.
 addPayloadRow();
 </script>
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+<script src="/static/vendor/chart.umd.min.js"></script>
 <script>
-new Chart(document.getElementById("healthChart"), {
-    type: "bar",
-    data: {
-        labels: {{ health_series.labels | tojson }},
-        datasets: [
-            {
-                label: "Completed",
-                data: {{ health_series.completed | tojson }},
-                backgroundColor: "#0f7a3f",
-                stack: "jobs",
+// Throughput & health chart. Colors come from the CSS custom properties so
+// the chart follows the light/dark theme; it re-renders on the topbar
+// toggle's "themechange" event (and when the OS preference flips).
+(function () {
+    let chart = null;
+
+    function cssVar(name) {
+        return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+    }
+
+    function renderChart() {
+        if (chart) chart.destroy();
+        const surface = cssVar("--panel");
+        chart = new Chart(document.getElementById("healthChart"), {
+            type: "bar",
+            data: {
+                labels: {{ health_series.labels | tojson }},
+                datasets: [
+                    {
+                        label: "Completed",
+                        data: {{ health_series.completed | tojson }},
+                        backgroundColor: cssVar("--chart-good"),
+                        stack: "jobs",
+                        borderColor: surface,
+                        borderWidth: 1,
+                        borderRadius: 3,
+                    },
+                    {
+                        label: "Dead lettered",
+                        data: {{ health_series.dead_lettered | tojson }},
+                        backgroundColor: cssVar("--chart-critical"),
+                        stack: "jobs",
+                        borderColor: surface,
+                        borderWidth: 1,
+                        borderRadius: 3,
+                    },
+                ],
             },
-            {
-                label: "Dead lettered",
-                data: {{ health_series.dead_lettered | tojson }},
-                backgroundColor: "#c62d2d",
-                stack: "jobs",
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: {
+                    x: {
+                        stacked: true,
+                        ticks: { color: cssVar("--chart-tick"), maxTicksLimit: 12 },
+                        grid: { display: false },
+                    },
+                    y: {
+                        stacked: true,
+                        beginAtZero: true,
+                        ticks: { color: cssVar("--chart-tick"), precision: 0 },
+                        grid: { color: cssVar("--chart-grid") },
+                        border: { display: false },
+                    },
+                },
+                plugins: {
+                    legend: {
+                        labels: { color: cssVar("--text-secondary"), boxWidth: 12, boxHeight: 12 },
+                    },
+                },
             },
-        ],
-    },
-    options: {
-        responsive: true,
-        scales: {
-            x: { stacked: true, ticks: { color: "#6b7686" }, grid: { color: "#e2e5ea" } },
-            y: { stacked: true, beginAtZero: true, ticks: { color: "#6b7686", precision: 0 }, grid: { color: "#e2e5ea" } },
-        },
-        plugins: { legend: { labels: { color: "#0b2447" } } },
-    },
-});
+        });
+    }
+
+    renderChart();
+    document.addEventListener("themechange", renderChart);
+    window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", renderChart);
+})();
 </script>
 {% endblock %}

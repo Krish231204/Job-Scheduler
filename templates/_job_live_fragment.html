@@ -1,0 +1,55 @@
+<div data-status="{{ job.status.value }}">
+<div class="card">
+    <h2>Details <span class="live-indicator">live</span></h2>
+    <table class="kv">
+        <tr><th>Status</th><td><span class="badge status-{{ job.status.value }}">{{ job.status.value }}</span></td></tr>
+        <tr><th>Type</th><td>{{ job.job_type.value }}</td></tr>
+        <tr><th>Attempts</th><td>{{ job.attempt_count }}</td></tr>
+        <tr><th>Run at</th><td>{{ job.run_at | ts }}</td></tr>
+        <tr><th>Claimed by worker</th><td>{{ ("#" ~ job.claimed_by) if job.claimed_by else "–" }}</td></tr>
+        <tr><th>Started</th><td>{{ job.started_at | ts }}</td></tr>
+        <tr><th>Completed</th><td>{{ job.completed_at | ts }}</td></tr>
+        <tr><th>Next retry at</th><td>{{ job.next_retry_at | ts }}</td></tr>
+        <tr><th>Batch ID</th><td>{{ job.batch_id or "–" }}</td></tr>
+        <tr><th>Payload</th><td><pre>{{ job.payload }}</pre></td></tr>
+    </table>
+    {% if job.status.value in ["dead_letter", "failed", "cancelled"] %}
+    <button type="button" style="margin-top: 12px"
+            onclick="fetch('/jobs/{{ job.id }}/retry', {method:'POST', credentials:'include'}).then(()=>location.reload())">Retry job</button>
+    {% endif %}
+</div>
+
+<div class="card">
+    <h2>Execution history</h2>
+    <div class="table-wrap">
+    <table class="table">
+        <thead><tr><th>Attempt</th><th>Status</th><th>Worker</th><th>Started</th><th>Duration</th><th>Error</th></tr></thead>
+        <tbody>
+        {% for e in job.executions %}
+            <tr>
+                <td>{{ e.attempt_number }}</td>
+                <td><span class="badge status-{{ e.status.value }}">{{ e.status.value }}</span></td>
+                <td class="mono">{{ ("#" ~ e.worker_id) if e.worker_id else "–" }}</td>
+                <td class="mono">{{ e.started_at | ts }}</td>
+                <td class="mono">{{ (e.duration_ms ~ "ms") if e.duration_ms is not none else "–" }}</td>
+                <td>{{ e.error or "–" }}</td>
+            </tr>
+        {% else %}
+            <tr><td colspan="6" class="muted">No executions yet.</td></tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    </div>
+</div>
+
+<div class="card">
+    <h2>Logs</h2>
+    <ul class="log-list">
+    {% for log in job.logs %}
+        <li class="log-{{ log.level.value }}"><span class="muted">{{ log.timestamp | ts }}</span> [{{ log.level.value }}] {{ log.message }}</li>
+    {% else %}
+        <li class="muted">No logs yet.</li>
+    {% endfor %}
+    </ul>
+</div>
+</div>

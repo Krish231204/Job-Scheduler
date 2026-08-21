@@ -1,27 +1,14 @@
 {% extends "base.html" %}
 {% block title %}Workers{% endblock %}
-{% block refresh %}<meta http-equiv="refresh" content="5">{% endblock %}
 {% block content %}
 <h1>Workers</h1>
-<div class="table-wrap">
-<table class="table">
-    <thead><tr><th>ID</th><th>Name</th><th>Host</th><th>PID</th><th>Status</th><th>Concurrency</th><th>Started</th><th>Last seen</th></tr></thead>
-    <tbody>
-    {% for w in workers %}
-        <tr>
-            <td>{{ w.id }}</td>
-            <td>{{ w.name }}</td>
-            <td>{{ w.hostname }}</td>
-            <td>{{ w.pid }}</td>
-            <td><span class="badge status-{{ w.status.value if w.status.value != 'offline' and w.last_seen_at >= online_cutoff else 'offline' }}">{{ w.status.value }}</span></td>
-            <td>{{ w.concurrency }}</td>
-            <td>{{ w.started_at }}</td>
-            <td>{{ w.last_seen_at }}</td>
-        </tr>
-    {% else %}
-        <tr><td colspan="8" class="muted">No workers registered yet.</td></tr>
-    {% endfor %}
-    </tbody>
-</table>
+<div id="workers-live">
+{% include "_workers_live_fragment.html" %}
 </div>
+
+<script>
+document.addEventListener("DOMContentLoaded", function () {
+    connectLive("/ws/workers", "workers-live");
+});
+</script>
 {% endblock %}
