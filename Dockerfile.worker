@@ -1,10 +1,10 @@
-FROM python:3.11-slim AS builder
+FROM python:3.13-slim AS builder
 
 WORKDIR /srv
 COPY requirements.txt .
 RUN pip install --no-cache-dir --user -r requirements.txt
 
-FROM python:3.11-slim
+FROM python:3.13-slim
 
 WORKDIR /srv
 RUN useradd -m -u 1000 appuser

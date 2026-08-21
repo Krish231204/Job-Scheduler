@@ -1,5 +1,5 @@
 line-length = 165
-target-version = "py311"
+target-version = "py313"
 
 [lint]
 # E/F: real correctness signal (unused imports, undefined names, syntax
