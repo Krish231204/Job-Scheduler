@@ -36,13 +36,24 @@ templates = Jinja2Templates(directory="templates")
 settings = get_settings()
 
 
+def _format_ts(value: datetime | None) -> str:
+    """Compact, second-precision timestamp for the dashboard's data voice
+    (raw datetime repr drags microseconds + offset into every table cell)."""
+    if value is None:
+        return "–"
+    return value.strftime("%Y-%m-%d %H:%M:%S")
+
+
+templates.env.filters["ts"] = _format_ts
+
+
 def _set_session_cookie(response, token: str) -> None:
     response.set_cookie(
         COOKIE_NAME,
         token,
         httponly=True,
         samesite="lax",
-        secure=settings.environment == "production",
+        secure=settings.effective_cookie_secure,
         max_age=60 * 60 * 24,
     )
 
@@ -210,33 +221,32 @@ async def dashboard_queue(
     )
 
 
-@router.websocket("/ws/queues/{queue_id}")
-async def ws_queue_updates(
-    websocket: WebSocket,
-    queue_id: int,
-    db: AsyncSession = Depends(get_db),
-    status_filter: str | None = None,
-):
-    """Pushes a freshly-rendered stats + job-explorer HTML fragment
-    (templates/_queue_live_fragment.html) to the browser every couple
-    seconds, replacing the old <meta http-equiv="refresh"> full-page
-    reload. Renders server-side and ships HTML, not JSON, so there's one
-    rendering implementation (Jinja2) instead of duplicating row/badge
-    markup in JS -- consistent with this dashboard's existing
-    thin-JS-islands approach.
+async def _ws_live_loop(websocket: WebSocket, db: AsyncSession, render_tick) -> None:
+    """Shared loop behind every /ws/* live-update endpoint: authenticate
+    from the session cookie, then push a freshly-rendered HTML fragment to
+    the browser every couple of seconds, replacing the old
+    <meta http-equiv="refresh"> full-page reloads. Renders server-side and
+    ships HTML, not JSON, so there's one rendering implementation (Jinja2)
+    instead of duplicating row/badge markup in JS -- consistent with this
+    dashboard's thin-JS-islands approach (see docs/DESIGN_DECISIONS.md).
 
-    Takes `db` via Depends(get_db) rather than opening AsyncSessionLocal()
-    directly -- the same one session lives for the whole connection
-    (committing after each tick's read releases the pooled connection
-    between polls rather than holding it the whole time), and, just as
-    importantly, this is what makes app.dependency_overrides[get_db] work
-    in tests the same way it does for every HTTP route.
+    `render_tick(db, user_id)` returns the rendered fragment, or None when
+    the resource doesn't exist / isn't visible to this user (closes 4404,
+    indistinguishable from not-found by design, same as the HTTP routes).
+
+    Takes `db` via Depends(get_db) at the route rather than opening
+    AsyncSessionLocal() directly -- the same one session lives for the
+    whole connection (committing after each tick's read releases the
+    pooled connection between polls rather than holding it the whole
+    time), and, just as importantly, this is what makes
+    app.dependency_overrides[get_db] work in tests the same way it does
+    for every HTTP route.
 
     WebSocket connections can't set custom headers from browser JS, so
     auth comes from the same-origin session cookie (sent automatically on
     the handshake), decoded the same way get_current_user_from_cookie
-    does for HTTP requests -- this function can't reuse that dependency
-    directly since it's typed against Request, not WebSocket.
+    does for HTTP requests -- this can't reuse that dependency directly
+    since it's typed against Request, not WebSocket.
     """
     token = websocket.cookies.get(COOKIE_NAME)
     if not token:
@@ -248,46 +258,14 @@ async def ws_queue_updates(
         await websocket.close(code=4401)
         return
 
-    if status_filter:
-        try:
-            JobStatus(status_filter)
-        except ValueError:
-            await websocket.close(code=4400)
-            return
-
     await websocket.accept()
     try:
         while True:
-            result = await db.execute(
-                select(Queue)
-                .options(selectinload(Queue.retry_policy))
-                .join(Project, Project.id == Queue.project_id)
-                .join(Organization, Organization.id == Project.organization_id)
-                .join(OrganizationMember, OrganizationMember.organization_id == Organization.id)
-                .where(Queue.id == queue_id, OrganizationMember.user_id == user_id)
-            )
-            queue = result.scalar_one_or_none()
-            if queue is None:
+            html = await render_tick(db, user_id)
+            await db.commit()  # release the pooled connection between polls
+            if html is None:
                 await websocket.close(code=4404)
                 return
-
-            filters = [Job.queue_id == queue.id]
-            if status_filter:
-                filters.append(Job.status == JobStatus(status_filter))
-            jobs_result = await db.execute(
-                select(Job).where(*filters).order_by(Job.created_at.desc()).limit(100)
-            )
-            jobs = list(jobs_result.scalars().all())
-            stats = await queue_stats(db, queue.id)
-            await db.commit()  # release the pooled connection between polls
-
-            html = templates.get_template("_queue_live_fragment.html").render(
-                queue=queue,
-                jobs=jobs,
-                stats=stats,
-                statuses=list(JobStatus),
-                status_filter=status_filter,
-            )
             await websocket.send_text(html)
             await asyncio.sleep(WS_UPDATE_INTERVAL_SECONDS)
     except WebSocketDisconnect:
@@ -295,6 +273,122 @@ async def ws_queue_updates(
     finally:
         with contextlib.suppress(Exception):
             await websocket.close()
+
+
+@router.websocket("/ws/queues/{queue_id}")
+async def ws_queue_updates(
+    websocket: WebSocket,
+    queue_id: int,
+    db: AsyncSession = Depends(get_db),
+    status_filter: str | None = None,
+):
+    """Live stats + job explorer for the queue detail page."""
+    if status_filter:
+        try:
+            JobStatus(status_filter)
+        except ValueError:
+            await websocket.close(code=4400)
+            return
+
+    async def render_tick(db: AsyncSession, user_id: int) -> str | None:
+        result = await db.execute(
+            select(Queue)
+            .options(selectinload(Queue.retry_policy))
+            .join(Project, Project.id == Queue.project_id)
+            .join(Organization, Organization.id == Project.organization_id)
+            .join(OrganizationMember, OrganizationMember.organization_id == Organization.id)
+            .where(Queue.id == queue_id, OrganizationMember.user_id == user_id)
+        )
+        queue = result.scalar_one_or_none()
+        if queue is None:
+            return None
+
+        filters = [Job.queue_id == queue.id]
+        if status_filter:
+            filters.append(Job.status == JobStatus(status_filter))
+        jobs_result = await db.execute(
+            select(Job).where(*filters).order_by(Job.created_at.desc()).limit(100)
+        )
+        jobs = list(jobs_result.scalars().all())
+        stats = await queue_stats(db, queue.id)
+
+        return templates.get_template("_queue_live_fragment.html").render(
+            queue=queue,
+            jobs=jobs,
+            stats=stats,
+            statuses=list(JobStatus),
+            status_filter=status_filter,
+        )
+
+    await _ws_live_loop(websocket, db, render_tick)
+
+
+@router.websocket("/ws/workers")
+async def ws_worker_updates(websocket: WebSocket, db: AsyncSession = Depends(get_db)):
+    """Live worker table, shared by the dashboard home and workers pages."""
+
+    async def render_tick(db: AsyncSession, user_id: int) -> str:
+        result = await db.execute(select(Worker).order_by(Worker.last_seen_at.desc()))
+        workers = list(result.scalars().all())
+        online_cutoff = datetime.now(timezone.utc) - timedelta(seconds=30)
+        return templates.get_template("_workers_live_fragment.html").render(
+            workers=workers, online_cutoff=online_cutoff
+        )
+
+    await _ws_live_loop(websocket, db, render_tick)
+
+
+@router.websocket("/ws/projects/{project_id}")
+async def ws_project_updates(websocket: WebSocket, project_id: int, db: AsyncSession = Depends(get_db)):
+    """Live queue table (per-queue stats) for the project page."""
+
+    async def render_tick(db: AsyncSession, user_id: int) -> str | None:
+        result = await db.execute(
+            select(Project)
+            .join(Organization, Organization.id == Project.organization_id)
+            .join(OrganizationMember, OrganizationMember.organization_id == Organization.id)
+            .where(Project.id == project_id, OrganizationMember.user_id == user_id)
+        )
+        project = result.scalar_one_or_none()
+        if project is None:
+            return None
+
+        queues_result = await db.execute(
+            select(Queue).options(selectinload(Queue.retry_policy)).where(Queue.project_id == project.id)
+        )
+        queues = list(queues_result.scalars().all())
+        stats_by_queue = {q.id: await queue_stats(db, q.id) for q in queues}
+        return templates.get_template("_project_queues_fragment.html").render(
+            project=project, queues=queues, stats=stats_by_queue
+        )
+
+    await _ws_live_loop(websocket, db, render_tick)
+
+
+@router.websocket("/ws/jobs/{job_id}")
+async def ws_job_updates(websocket: WebSocket, job_id: int, db: AsyncSession = Depends(get_db)):
+    """Live details / execution history / logs for the job detail page.
+    The fragment's root carries data-status; the page script reloads once
+    when the job reaches a terminal status so status-dependent chrome
+    (retry button, AI-summary card) appears without re-implementing it
+    client-side."""
+
+    async def render_tick(db: AsyncSession, user_id: int) -> str | None:
+        result = await db.execute(
+            select(Job)
+            .options(selectinload(Job.executions), selectinload(Job.logs))
+            .join(Queue, Queue.id == Job.queue_id)
+            .join(Project, Project.id == Queue.project_id)
+            .join(Organization, Organization.id == Project.organization_id)
+            .join(OrganizationMember, OrganizationMember.organization_id == Organization.id)
+            .where(Job.id == job_id, OrganizationMember.user_id == user_id)
+        )
+        job = result.scalar_one_or_none()
+        if job is None:
+            return None
+        return templates.get_template("_job_live_fragment.html").render(job=job)
+
+    await _ws_live_loop(websocket, db, render_tick)
 
 
 @router.get("/dashboard/jobs/{job_id}", response_class=HTMLResponse)

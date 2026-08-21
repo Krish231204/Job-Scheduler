@@ -1,20 +1,126 @@
+/* ==========================================================================
+   Job Scheduler dashboard
+   --------------------------------------------------------------------------
+   Design notes (see docs/DESIGN_DECISIONS.md):
+   - Two voices: UI text in the system sans; every machine value (ids,
+     counts, durations, timestamps, cron expressions, stat values) in the
+     system mono. The mono is the product's data voice, not decoration.
+   - Theming: tokens on :root (light), overridden by
+     @media (prefers-color-scheme: dark) and by an explicit
+     [data-theme="dark"|"light"] stamp set by the topbar toggle -- the
+     explicit stamp wins over the OS preference in both directions.
+   - Status colors are a fixed, reserved palette (good/warn/serious/critical)
+     shared by badges and the throughput chart; they are never reused as
+     generic accents.
+   ========================================================================== */
+
 :root {
-    /* Light SaaS palette */
-    --bg: #f7f9fc;
-    --panel: #ffffff;
-    --panel-inset: #f4f7fb;
-    --border: #e2e5ea;
-    --text: #0b2447;
-    --muted: #6b7686;
-    --accent: #1c5cd7;
-    --ok: #0f7a3f;
-    --ok-bg: #eafaf0;
-    --warn: #a65c00;
-    --warn-bg: #fff4e0;
-    --err: #c62d2d;
-    --err-bg: #fdeceb;
-    --btn-primary: #1c5cd7;
-    --btn-primary-hover: #164db3;
+    color-scheme: light;
+
+    /* Surfaces & ink (warm neutrals) */
+    --bg: #f9f9f7;
+    --panel: #fcfcfb;
+    --panel-inset: #f3f2ef;
+    --border: #e1e0d9;
+    --border-strong: #c3c2b7;
+    --text: #0b0b0b;
+    --text-secondary: #52514e;
+    --muted: #898781;
+
+    /* Accent (interactive: links, buttons, focus) */
+    --accent: #4a3aa7;
+    --accent-hover: #3b2e86;
+    --accent-ink: #ffffff;
+    --accent-wash: rgba(74, 58, 167, 0.08);
+    --focus-ring: rgba(74, 58, 167, 0.35);
+
+    /* Status (reserved) */
+    --ok: #087a08;
+    --ok-bg: #e7f5e7;
+    --warn: #8a5a00;
+    --warn-bg: #faf0d8;
+    --err: #b32f2f;
+    --err-bg: #fbe9e9;
+
+    /* Chart series (status-semantic: completed / dead-lettered) */
+    --chart-good: #0ca30c;
+    --chart-critical: #d03b3b;
+    --chart-grid: #e1e0d9;
+    --chart-tick: #898781;
+
+    --live: #0ca30c;
+
+    --radius: 8px;
+    --shadow-1: 0 1px 2px rgba(11, 11, 11, 0.05);
+
+    --font-ui: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --font-mono: ui-monospace, "SF Mono", "Cascadia Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+        color-scheme: dark;
+        --bg: #0d0d0d;
+        --panel: #1a1a19;
+        --panel-inset: #232322;
+        --border: #2c2c2a;
+        --border-strong: #383835;
+        --text: #f4f4f2;
+        --text-secondary: #c3c2b7;
+        --muted: #898781;
+
+        --accent: #9085e9;
+        --accent-hover: #a89ff0;
+        --accent-ink: #14122b;
+        --accent-wash: rgba(144, 133, 233, 0.12);
+        --focus-ring: rgba(144, 133, 233, 0.45);
+
+        --ok: #4cc24c;
+        --ok-bg: rgba(12, 163, 12, 0.16);
+        --warn: #fab219;
+        --warn-bg: rgba(250, 178, 25, 0.14);
+        --err: #ec6e6e;
+        --err-bg: rgba(208, 59, 59, 0.18);
+
+        --chart-good: #0ca30c;
+        --chart-critical: #d03b3b;
+        --chart-grid: #2c2c2a;
+        --chart-tick: #898781;
+
+        --shadow-1: none;
+    }
+}
+
+:root[data-theme="dark"] {
+    color-scheme: dark;
+    --bg: #0d0d0d;
+    --panel: #1a1a19;
+    --panel-inset: #232322;
+    --border: #2c2c2a;
+    --border-strong: #383835;
+    --text: #f4f4f2;
+    --text-secondary: #c3c2b7;
+    --muted: #898781;
+
+    --accent: #9085e9;
+    --accent-hover: #a89ff0;
+    --accent-ink: #14122b;
+    --accent-wash: rgba(144, 133, 233, 0.12);
+    --focus-ring: rgba(144, 133, 233, 0.45);
+
+    --ok: #4cc24c;
+    --ok-bg: rgba(12, 163, 12, 0.16);
+    --warn: #fab219;
+    --warn-bg: rgba(250, 178, 25, 0.14);
+    --err: #ec6e6e;
+    --err-bg: rgba(208, 59, 59, 0.18);
+
+    --chart-good: #0ca30c;
+    --chart-critical: #d03b3b;
+    --chart-grid: #2c2c2a;
+    --chart-tick: #898781;
+
+    --shadow-1: none;
 }
 
 * { box-sizing: border-box; }
@@ -23,116 +129,281 @@ body {
     margin: 0;
     background: var(--bg);
     color: var(--text);
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    font-family: var(--font-ui);
+    font-size: 15px;
+    line-height: 1.5;
 }
 
 a { color: var(--accent); text-decoration: none; }
 a:hover { text-decoration: underline; }
+a:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+
+code, pre, .mono { font-family: var(--font-mono); font-size: 0.92em; }
+
+/* ------------------------------------------------------------------ */
+/* Top bar                                                            */
+/* ------------------------------------------------------------------ */
 
 .topbar {
     display: flex;
     align-items: center;
     gap: 24px;
-    padding: 14px 28px;
+    padding: 12px 28px;
     border-bottom: 1px solid var(--border);
     background: var(--panel);
+    position: sticky;
+    top: 0;
+    z-index: 10;
 }
-.topbar .brand { font-weight: 700; font-size: 1.2rem; color: var(--text); }
+.topbar .brand {
+    font-family: var(--font-mono);
+    font-weight: 700;
+    font-size: 1.05rem;
+    letter-spacing: -0.02em;
+    color: var(--text);
+}
+.topbar .brand .brand-dot { color: var(--live); }
 .topbar nav { display: flex; gap: 4px; flex: 1; }
 .topbar nav a {
     padding: 6px 12px;
     border-radius: 6px;
-    transition: background-color .15s ease;
+    color: var(--text-secondary);
+    transition: background-color .15s ease, color .15s ease;
 }
-.topbar nav a:hover { background: rgba(11,36,71,0.05); text-decoration: none; }
-.logout-form { display: flex; align-items: center; gap: 10px; }
+.topbar nav a:hover { background: var(--accent-wash); color: var(--text); text-decoration: none; }
+.topbar nav a.active { color: var(--text); background: var(--panel-inset); }
+.topbar-actions { display: flex; align-items: center; gap: 10px; }
+.logout-form { display: flex; align-items: center; gap: 10px; margin: 0; }
+
+.theme-toggle {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
+    border-radius: 6px;
+    width: 34px;
+    height: 34px;
+    padding: 0;
+    margin: 0;
+    font-size: 1rem;
+    line-height: 1;
+    cursor: pointer;
+    transition: border-color .12s ease, background-color .12s ease;
+}
+.theme-toggle:hover { border-color: var(--border-strong); background: var(--panel-inset); box-shadow: none; }
+/* Show the icon for the mode the toggle would switch TO */
+.theme-toggle .icon-sun { display: none; }
+:root[data-theme="dark"] .theme-toggle .icon-sun { display: inline; }
+:root[data-theme="dark"] .theme-toggle .icon-moon { display: none; }
+@media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) .theme-toggle .icon-sun { display: inline; }
+    :root:not([data-theme="light"]) .theme-toggle .icon-moon { display: none; }
+}
+
+/* ------------------------------------------------------------------ */
+/* Layout & cards                                                     */
+/* ------------------------------------------------------------------ */
+
+.container { max-width: 1160px; margin: 0 auto; padding: 28px; }
+
+h1 { margin: 0 0 18px; font-size: 1.45rem; letter-spacing: -0.01em; }
+h1 .badge { vertical-align: middle; }
+h2 {
+    margin: 0 0 14px;
+    font-size: 0.8rem;
+    font-family: var(--font-mono);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-secondary);
+}
+
+.card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 20px;
+    margin-bottom: 20px;
+    box-shadow: var(--shadow-1);
+}
+
+.link-card { display: block; color: inherit; transition: border-color .15s ease, background-color .15s ease; }
+.link-card:hover { border-color: var(--accent); text-decoration: none; background: var(--accent-wash); }
+.link-card h2 { color: var(--text); text-transform: none; font-family: var(--font-ui); font-size: 1.05rem; letter-spacing: 0; }
+.link-card p { margin: 4px 0 0; }
 
 .breadcrumb {
     display: inline-flex;
     align-items: center;
     gap: 4px;
-    margin-bottom: 8px;
-    font-size: 0.9rem;
+    margin-bottom: 10px;
+    font-size: 0.88rem;
+    color: var(--text-secondary);
 }
-.breadcrumb:hover { text-decoration: none; }
-.breadcrumb:hover span { text-decoration: underline; }
+.breadcrumb:hover { text-decoration: none; color: var(--accent); }
 
-.container { max-width: 1100px; margin: 0 auto; padding: 28px; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 16px; margin-bottom: 24px; }
 
-h1 { margin-top: 0; }
+/* ------------------------------------------------------------------ */
+/* Stat tiles                                                         */
+/* ------------------------------------------------------------------ */
 
-.card {
-    background: var(--panel);
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    padding: 20px;
+.stats-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(128px, 1fr));
+    gap: 10px;
     margin-bottom: 20px;
 }
-
-.link-card {
+.stat {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 12px 14px;
+}
+.stat-value {
     display: block;
-    transition: border-color .15s ease, transform .15s ease, box-shadow .15s ease;
+    font-family: var(--font-mono);
+    font-size: 1.55rem;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    line-height: 1.2;
 }
-.link-card:hover {
-    border-color: var(--accent);
-    text-decoration: none;
-    transform: translateY(-2px);
-    box-shadow: 0 6px 16px rgba(11,36,71,0.1);
+.stat-value .stat-unit { font-size: 0.85rem; color: var(--muted); font-weight: 500; }
+.stat-label {
+    display: block;
+    margin-top: 2px;
+    color: var(--muted);
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
 }
 
-.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 16px; margin-bottom: 24px; }
-
-.stats-grid .stat { text-align: center; }
-.stats-grid .stat { background: var(--panel-inset); }
-.stat-value { display: block; font-size: 1.8rem; font-weight: 700; }
-.stat-label { color: var(--muted); font-size: 0.85rem; }
+/* ------------------------------------------------------------------ */
+/* Tables                                                             */
+/* ------------------------------------------------------------------ */
 
 .table { width: 100%; border-collapse: collapse; }
-.table th, .table td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); }
-.table th { color: var(--muted); font-weight: 600; font-size: 0.85rem; text-transform: uppercase; }
+.table th, .table td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--border); }
+.table th {
+    color: var(--muted);
+    font-family: var(--font-mono);
+    font-weight: 600;
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+}
+.table td { font-variant-numeric: tabular-nums; }
+.table td.mono, .table .mono { font-family: var(--font-mono); font-size: 0.88em; }
 .table tbody tr { transition: background-color .1s ease; }
-.table tbody tr:hover { background: rgba(11,36,71,0.03); }
+.table tbody tr:hover { background: var(--panel-inset); }
+.table tbody tr:last-child td { border-bottom: none; }
 .clickable-row { cursor: pointer; }
-.clickable-row:hover { background: rgba(28,92,215,0.06); }
+.clickable-row:hover { background: var(--accent-wash); }
 
-.kv th { color: var(--muted); text-align: left; padding: 6px 12px 6px 0; vertical-align: top; }
-.kv td { padding: 6px 0; }
+.kv { border-collapse: collapse; }
+.kv th {
+    color: var(--muted);
+    text-align: left;
+    padding: 6px 16px 6px 0;
+    vertical-align: top;
+    font-weight: 500;
+    font-size: 0.85rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    font-family: var(--font-mono);
+}
+.kv td { padding: 6px 0; font-family: var(--font-mono); font-size: 0.9rem; }
 
-pre { white-space: pre-wrap; word-break: break-word; }
+pre { white-space: pre-wrap; word-break: break-word; margin: 0; }
+
+.table-wrap { width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.table-wrap .table { min-width: 560px; }
+
+/* ------------------------------------------------------------------ */
+/* Badges & live indicator                                            */
+/* ------------------------------------------------------------------ */
 
 .badge {
     display: inline-block;
-    padding: 2px 10px;
-    border-radius: 999px;
-    font-size: 0.75rem;
+    padding: 2px 9px;
+    border-radius: 5px;
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
     font-weight: 600;
+    letter-spacing: 0.02em;
     background: var(--panel-inset);
-    color: var(--muted);
+    color: var(--text-secondary);
 }
 .status-completed, .status-succeeded, .status-online { background: var(--ok-bg); color: var(--ok); }
 .status-failed, .status-dead_letter, .status-offline { background: var(--err-bg); color: var(--err); }
-.status-running, .status-claimed, .status-draining { background: var(--warn-bg); color: var(--warn); }
-.status-queued, .status-scheduled, .status-retrying, .status-cancelled { background: var(--panel-inset); color: var(--muted); }
+.status-running, .status-claimed, .status-draining, .status-retrying { background: var(--warn-bg); color: var(--warn); }
+.status-queued, .status-scheduled, .status-cancelled { background: var(--panel-inset); color: var(--text-secondary); }
+
+/* The signature: every live-updating region announces itself with a
+   pulsing dot. Hidden until its WebSocket actually connects. */
+.live-indicator {
+    display: none;
+    align-items: center;
+    gap: 6px;
+    font-family: var(--font-mono);
+    font-size: 0.68rem;
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    color: var(--ok);
+    text-transform: uppercase;
+    vertical-align: middle;
+}
+.live-indicator::before {
+    content: "";
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--live);
+    animation: live-pulse 2s ease-in-out infinite;
+}
+.live-indicator.connected { display: inline-flex; }
+@keyframes live-pulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(12, 163, 12, 0.45); }
+    50% { box-shadow: 0 0 0 5px rgba(12, 163, 12, 0); }
+}
+@media (prefers-reduced-motion: reduce) {
+    .live-indicator::before { animation: none; }
+}
+
+/* ------------------------------------------------------------------ */
+/* Filter bar                                                         */
+/* ------------------------------------------------------------------ */
 
 .filter-bar { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 14px; }
 .filter-bar a {
     padding: 4px 10px;
     border-radius: 6px;
     border: 1px solid var(--border);
-    font-size: 0.85rem;
-    color: var(--muted);
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    color: var(--text-secondary);
     transition: background-color .12s ease, border-color .12s ease, color .12s ease;
 }
-.filter-bar a:hover { text-decoration: none; border-color: var(--accent); color: var(--accent); background: rgba(28,92,215,0.06); }
-.filter-bar a.active { background: var(--accent); color: #ffffff; border-color: var(--accent); }
-.filter-bar a.active:hover { background: var(--btn-primary-hover); color: #ffffff; }
+.filter-bar a:hover { text-decoration: none; border-color: var(--accent); color: var(--accent); background: var(--accent-wash); }
+.filter-bar a.active { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
 
-.log-list { list-style: none; padding: 0; margin: 0; font-family: ui-monospace, monospace; font-size: 0.85rem; }
-.log-list li { padding: 4px 0; border-bottom: 1px solid var(--border); }
+/* ------------------------------------------------------------------ */
+/* Logs                                                               */
+/* ------------------------------------------------------------------ */
+
+.log-list { list-style: none; padding: 0; margin: 0; font-family: var(--font-mono); font-size: 0.82rem; }
+.log-list li { padding: 5px 0; border-bottom: 1px solid var(--border); }
+.log-list li:last-child { border-bottom: none; }
 .log-error { color: var(--err); }
 .log-warning { color: var(--warn); }
 
-form label { display: block; margin-bottom: 10px; font-size: 0.9rem; color: var(--muted); }
+/* ------------------------------------------------------------------ */
+/* Forms & buttons                                                    */
+/* ------------------------------------------------------------------ */
+
+form label { display: block; margin-bottom: 10px; font-size: 0.88rem; color: var(--text-secondary); }
 form input, form select, form textarea {
     display: block;
     width: 100%;
@@ -143,101 +414,78 @@ form input, form select, form textarea {
     background: var(--panel-inset);
     color: var(--text);
     font-family: inherit;
+    font-size: 0.92rem;
     transition: border-color .12s ease;
 }
 form input:focus, form select:focus, form textarea:focus {
     outline: none;
     border-color: var(--accent);
-    box-shadow: 0 0 0 3px rgba(28,92,215,0.18);
+    box-shadow: 0 0 0 3px var(--focus-ring);
 }
-form input[type="checkbox"] { display: inline-block; width: auto; margin-top: 0; }
+form input[type="checkbox"] { display: inline-block; width: auto; margin-top: 0; accent-color: var(--accent); }
 
 button {
     padding: 8px 16px;
     border-radius: 6px;
-    border: 1px solid var(--btn-primary);
-    background: var(--btn-primary);
-    color: #ffffff;
+    border: 1px solid var(--accent);
+    background: var(--accent);
+    color: var(--accent-ink);
+    font-family: inherit;
+    font-size: 0.9rem;
     font-weight: 600;
     cursor: pointer;
     margin-right: 8px;
-    transition: background-color .12s ease, box-shadow .12s ease, transform .05s ease;
+    transition: background-color .12s ease, transform .05s ease;
 }
-/* Buttons should look pressable: a clear lift-and-glow on hover, a visible
-   "pressed" squash on click, and a focus ring for keyboard users -- not just
-   a flat block of color that's hard to tell apart from a static badge. */
-button:hover {
-    background: var(--btn-primary-hover);
-    box-shadow: 0 2px 10px rgba(28,92,215,0.35);
-}
-button:active { transform: translateY(1px) scale(0.98); box-shadow: none; }
-button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+button:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+button:active { transform: translateY(1px); }
 button:disabled {
-    background: var(--border);
+    background: var(--panel-inset);
     border-color: var(--border);
     color: var(--muted);
     cursor: not-allowed;
-    box-shadow: none;
 }
-
-/* Secondary (less prominent) actions -- e.g. "Pause queue" next to "Save" --
-   use `class="button-secondary"` so the primary action still stands out. */
 button.button-secondary {
     background: transparent;
     color: var(--text);
-    border-color: var(--border);
+    border-color: var(--border-strong);
 }
-button.button-secondary:hover {
-    background: rgba(11,36,71,0.04);
-    border-color: var(--muted);
-    box-shadow: none;
-}
+button.button-secondary:hover { background: var(--panel-inset); border-color: var(--muted); }
+button.button-small { padding: 4px 10px; font-size: 0.8rem; }
 
 .muted { color: var(--muted); }
 .error { color: var(--err); }
 
 .auth-card { max-width: 380px; margin: 60px auto; }
-
-/* Wide tables (job explorer, worker list, queue list) shouldn't force the
-   whole page to scroll horizontally on a small screen -- only the table
-   itself scrolls, everything else stays put. */
-.table-wrap {
-    width: 100%;
-    overflow-x: auto;
-    -webkit-overflow-scrolling: touch;
-}
-.table-wrap .table { min-width: 560px; }
+.auth-card h1 { font-size: 1.2rem; }
 
 /* ------------------------------------------------------------------ */
-/* Responsive breakpoints                                             */
+/* Chart                                                              */
+/* ------------------------------------------------------------------ */
+
+.chart-wrap { position: relative; height: 220px; }
+
+/* ------------------------------------------------------------------ */
+/* Responsive                                                         */
 /* ------------------------------------------------------------------ */
 
 @media (max-width: 720px) {
     .container { padding: 16px; }
-    h1 { font-size: 1.35rem; }
+    h1 { font-size: 1.25rem; }
 
-    .topbar {
-        flex-wrap: wrap;
-        padding: 12px 16px;
-        gap: 10px;
-    }
-    .topbar nav {
-        order: 3;
-        flex-basis: 100%;
-        gap: 2px;
-    }
+    .topbar { flex-wrap: wrap; padding: 10px 16px; gap: 10px; }
+    .topbar nav { order: 3; flex-basis: 100%; gap: 2px; }
     .topbar nav a { padding: 6px 8px; font-size: 0.9rem; }
-    .logout-form { margin-left: auto; gap: 8px; }
-    .logout-form .user-email { display: none; } /* saves space; email is on /auth/me and the account itself is obvious from context */
+    .topbar-actions { margin-left: auto; }
+    .logout-form .user-email { display: none; }
 
     .card { padding: 14px; }
     .grid { grid-template-columns: 1fr; }
     .stats-grid { grid-template-columns: repeat(2, 1fr); }
 
     .filter-bar { gap: 4px; }
-    .filter-bar a { padding: 5px 8px; font-size: 0.8rem; }
+    .filter-bar a { padding: 5px 8px; font-size: 0.74rem; }
 
-    /* Stack action buttons full-width instead of a cramped inline row. */
     .card form > button,
     .card form > button.button-secondary {
         display: block;
@@ -248,6 +496,5 @@ button.button-secondary:hover {
 
 @media (max-width: 420px) {
     .stats-grid { grid-template-columns: 1fr 1fr; }
-    .stat-value { font-size: 1.4rem; }
-    .topbar .brand { font-size: 1.05rem; }
+    .stat-value { font-size: 1.3rem; }
 }

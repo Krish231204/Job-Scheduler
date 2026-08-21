@@ -3,7 +3,45 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Job, JobStatus
+from app.models import ExecutionStatus, Job, JobExecution, JobStatus
+
+# Window for the "current rate" metrics (jobs/sec, latency percentiles).
+# Long enough to smooth out poll-interval noise, short enough that the
+# dashboard reflects what the queue is doing *now* rather than averaging
+# in yesterday's traffic.
+RATE_WINDOW_SECONDS = 300
+
+
+async def queue_latency_percentiles(db: AsyncSession, queue_id: int, since: datetime) -> dict:
+    """p50/p95/p99 of successful execution durations since `since`.
+
+    Measured over JobExecution.duration_ms (per-attempt handler runtime as
+    recorded by the worker) rather than Job.completed_at - Job.started_at,
+    so a job that succeeded on its 3rd attempt contributes its final
+    attempt's real duration, not the whole span including backoff waits.
+    percentile_cont is a Postgres ordered-set aggregate -- one round trip
+    computes all three.
+    """
+    result = await db.execute(
+        select(
+            func.percentile_cont(0.5).within_group(JobExecution.duration_ms),
+            func.percentile_cont(0.95).within_group(JobExecution.duration_ms),
+            func.percentile_cont(0.99).within_group(JobExecution.duration_ms),
+        )
+        .join(Job, Job.id == JobExecution.job_id)
+        .where(
+            Job.queue_id == queue_id,
+            JobExecution.status == ExecutionStatus.SUCCEEDED,
+            JobExecution.duration_ms.isnot(None),
+            JobExecution.finished_at >= since,
+        )
+    )
+    p50, p95, p99 = result.one()
+    return {
+        "p50_ms": float(p50) if p50 is not None else None,
+        "p95_ms": float(p95) if p95 is not None else None,
+        "p99_ms": float(p99) if p99 is not None else None,
+    }
 
 
 async def queue_stats(db: AsyncSession, queue_id: int) -> dict:
@@ -21,12 +59,23 @@ async def queue_stats(db: AsyncSession, queue_id: int) -> dict:
     )
     avg_ms = avg_duration.scalar()
 
-    since = datetime.now(timezone.utc) - timedelta(hours=1)
+    now = datetime.now(timezone.utc)
+    since_hour = now - timedelta(hours=1)
     throughput = await db.execute(
         select(func.count(Job.id)).where(
-            Job.queue_id == queue_id, Job.status == JobStatus.COMPLETED, Job.completed_at >= since
+            Job.queue_id == queue_id, Job.status == JobStatus.COMPLETED, Job.completed_at >= since_hour
         )
     )
+
+    since_rate = now - timedelta(seconds=RATE_WINDOW_SECONDS)
+    recent_completed = await db.execute(
+        select(func.count(Job.id)).where(
+            Job.queue_id == queue_id, Job.status == JobStatus.COMPLETED, Job.completed_at >= since_rate
+        )
+    )
+    jobs_per_second = (recent_completed.scalar() or 0) / RATE_WINDOW_SECONDS
+
+    percentiles = await queue_latency_percentiles(db, queue_id, since_rate)
 
     return {
         "queue_id": queue_id,
@@ -40,6 +89,8 @@ async def queue_stats(db: AsyncSession, queue_id: int) -> dict:
         "cancelled": counts.get("cancelled", 0),
         "avg_duration_ms": float(avg_ms) if avg_ms is not None else None,
         "throughput_last_hour": throughput.scalar() or 0,
+        "jobs_per_second": jobs_per_second,
+        **percentiles,
     }
 
 

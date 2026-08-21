@@ -14,8 +14,12 @@ for the dashboard.
 > **Origin:** this started as a take-home assignment and has been extended
 > since — a security/hardening pass (org-scoped authorization, RBAC on queue
 > config, rate limiting, liveness/readiness split), WebSocket live updates
-> on the queue dashboard, AI-generated dead-letter failure summaries, and CI
-> with linting plus dependency vulnerability scanning. See
+> across the whole dashboard, a visual redesign with dark mode, throughput/
+> latency metrics with a reproducible benchmark (see "Performance" below),
+> a production deployment path for AWS EC2
+> ([docs/DEPLOY_EC2.md](docs/DEPLOY_EC2.md)), AI-generated dead-letter
+> failure summaries, and CI with linting plus dependency vulnerability
+> scanning. See
 > [docs/DESIGN_DECISIONS.md](docs/DESIGN_DECISIONS.md) for what changed and
 > why, including a **Known limitations** section covering the guarantees
 > this system deliberately does *not* make.
@@ -29,10 +33,12 @@ app/                  FastAPI app: routers, models, schemas, services
   models.py           SQLAlchemy ORM models (see docs/ER_DIAGRAM.md)
 worker/               Worker process: polls, claims, executes, heartbeats
 scheduler/            Scheduler process: cron/delay promotion, stale-worker recovery
-templates/, static/   Server-rendered dashboard (Jinja2)
+templates/, static/   Server-rendered dashboard (Jinja2; light/dark, live over WebSockets)
 migrations/           Alembic migrations
+scripts/              seed.py (demo data), benchmark.py (see "Performance")
+deploy/               Caddyfile for the optional HTTPS profile
 tests/                Pytest suite (see "Testing" below)
-docs/                 Architecture, ER diagram, design decisions
+docs/                 Architecture, ER diagram, design decisions, EC2 deploy guide
 ```
 
 ## Running it
@@ -112,11 +118,13 @@ curl -X POST localhost:8000/queues/1/jobs -H "Authorization: Bearer $TOKEN" -H "
   -d '{"name": "import-row", "job_type": "batch", "batch_items": [{"row": 1}, {"row": 2}]}'
 ```
 
-3. Watch it happen at `http://localhost:8000/dashboard` — queue health,
-   job explorer (filterable by status), execution logs/retry history per
-   job, and worker status. The queue detail page updates live over a
-   WebSocket (stats + job explorer refresh in place, no page reload) —
-   everything else uses a periodic full-page refresh.
+3. Watch it happen at `http://localhost:8000/dashboard` — queue health
+   (including live jobs/sec and p50/p95/p99 latency), job explorer
+   (filterable by status), execution logs/retry history per job, and
+   worker status. Every page updates live over a WebSocket: the server
+   re-renders the page's Jinja2 fragment and pushes HTML; there are no
+   full-page refreshes and no client-side templates. The dashboard
+   follows your OS light/dark preference, with a topbar toggle.
 
 Jobs run through the built-in demo handler (`worker/handlers.py`) unless you
 register a real one by name. The demo handler simulates work and can be told
@@ -134,6 +142,45 @@ Any org member can view queues/jobs and submit/retry/cancel jobs; changing
 queue configuration (priority, concurrency, retry policy, pause/resume) or
 creating new queues requires the `owner` or `admin` role.
 
+## Performance
+
+`scripts/benchmark.py` runs a fixed, deterministic workload (no randomness,
+sequential idempotency keys, pinned 0.05s worker poll interval) against a
+dedicated benchmark database and reports submission throughput, drain
+throughput, and per-job latency percentiles — so any configuration change
+can be quoted as a real before/after number:
+
+```bash
+python -m scripts.benchmark                              # 500 jobs, 1 worker x 8
+python -m scripts.benchmark --jobs 1000 --workers 4 --concurrency 8
+python -m scripts.benchmark --handler-ms 100 --json      # simulate real work; machine-readable
+```
+
+Numbers below were measured on a 4-vCPU Linux container (Python 3.11,
+local PostgreSQL 16) with the flags shown — absolute values will differ on
+your hardware; the *ratios* are the point.
+
+**Worker-pool scaling** (500 jobs, 100 ms simulated work per job,
+concurrency 4 per worker) — throughput scales near-linearly until the pool
+approaches the scheduler's bookkeeping ceiling:
+
+| Pool | Drain throughput | Execution p50 / p95 / p99 |
+|---|---|---|
+| 1 worker × 4 | 23.7 jobs/s | 115 / 119 / 132 ms |
+| 2 workers × 4 | 46.4 jobs/s (1.96×) | 115 / 136 / 152 ms |
+| 4 workers × 4 | 82.8 jobs/s (3.49×) | 118 / 142 / 187 ms |
+
+**Scheduler overhead ceiling** (1000 jobs, 0 ms handler, 1 worker × 8):
+~126 jobs/s drained. With no real work per job the bottleneck is the
+claim/execute/record round trips to Postgres, so adding workers does not
+raise it — a deliberate measurement of the framework's own cost per job.
+
+**Cost of the idempotency guarantee** (1000 jobs, one commit per job,
+1 worker × 8): 278 jobs/s submitted with idempotency keys vs 412 jobs/s
+without — i.e. the partial unique index plus duplicate-check fast path
+(migration 0003) costs about a third of raw submission throughput, which
+is the price of exactly-one-job-per-key under concurrency.
+
 ## Operations
 
 - `GET /health/live` — process-alive check, no dependencies.
@@ -142,7 +189,12 @@ creating new queues requires the `owner` or `admin` role.
   orchestrator readiness checks, not `/health/live`.
 - Set `ENVIRONMENT=production` in a real deployment: this makes the app
   refuse to start if `JWT_SECRET` is still the insecure default, and makes
-  the dashboard's session cookie `Secure` (HTTPS-only).
+  the dashboard's session cookie `Secure` (HTTPS-only; `COOKIE_SECURE=false`
+  is the documented opt-out for TLS-less deployments).
+- Deploying for real: `docker-compose.prod.yml` (memory-capped services,
+  secrets from `.env.prod`, optional Caddy HTTPS profile) plus the
+  step-by-step AWS EC2 free-tier walkthrough in
+  [docs/DEPLOY_EC2.md](docs/DEPLOY_EC2.md).
 
 ## Testing
 
@@ -181,12 +233,12 @@ maximizing a percentage.
 **Lint & dependency scanning:** `pip install ruff pip-audit && ruff check .
 && pip-audit -r requirements.txt` (also run in CI on every push/PR).
 
-**Verification status:** this has been run end-to-end via
-`docker compose up --build` against real Postgres -- registration, job
-submission (immediate + a deliberately-failing job to watch the
-retry/dead-letter path), and the full `pytest` suite (33/33 passing,
-including the concurrent-claim and concurrent-idempotency tests) all
-confirmed working. A few real bugs
+**Verification status:** this has been run end-to-end against real
+Postgres -- registration, job submission (immediate + a
+deliberately-failing job to watch the retry/dead-letter path), live
+dashboard updates in a real browser, and the full `pytest` suite (36/36
+passing on Python 3.11 and 3.13, including the concurrent-claim and
+concurrent-idempotency tests) all confirmed working. A few real bugs
 turned up only once it was actually executed (an enum serialization
 mismatch, a missing `email-validator` dependency, a `passlib`/`bcrypt`
 version incompatibility) and are documented, with fixes, in

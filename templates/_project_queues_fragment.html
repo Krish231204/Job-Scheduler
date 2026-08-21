@@ -1,0 +1,28 @@
+<div class="card">
+    <h2>Queues <span class="live-indicator">live</span></h2>
+    <div class="table-wrap">
+    <table class="table">
+        <thead>
+            <tr><th>Name</th><th>Priority</th><th>Concurrency</th><th>Queued</th><th>Running</th><th>Failed/Retrying</th><th>Dead letter</th><th>Jobs/sec</th><th>p95 (5m)</th></tr>
+        </thead>
+        <tbody>
+        {% for q in queues %}
+            {% set s = stats[q.id] %}
+            <tr onclick="window.location='/dashboard/queues/{{ q.id }}'" class="clickable-row">
+                <td>{{ q.name }}{% if q.is_paused %} <span class="badge status-offline">paused</span>{% endif %}</td>
+                <td>{{ q.priority }}</td>
+                <td>{{ q.max_concurrency }}</td>
+                <td>{{ s.queued + s.scheduled }}</td>
+                <td>{{ s.claimed + s.running }}</td>
+                <td>{{ s.failed }}</td>
+                <td>{{ s.dead_letter }}</td>
+                <td class="mono">{{ "%.2f" | format(s.jobs_per_second) }}</td>
+                <td class="mono">{{ (s.p95_ms | round(0) | int ~ "ms") if s.p95_ms is not none else "–" }}</td>
+            </tr>
+        {% else %}
+            <tr><td colspan="9" class="muted">No queues yet. Create one via POST /projects/{{ project.id }}/queues.</td></tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    </div>
+</div>

@@ -98,12 +98,12 @@ sequenceDiagram
   are separate on purpose -- a load balancer or orchestrator should route
   on readiness, not liveness, or it'll keep sending traffic to a replica
   whose database connection is down but whose process is still alive.
-- The queue detail dashboard page holds a persistent WebSocket connection
-  (`/ws/queues/{queue_id}`) rather than the request/response pattern
-  everything else in this diagram uses -- the API process re-queries
-  Postgres and re-renders a fragment on an interval per open connection,
-  pushing to that one client, rather than anything event-driven from the
-  worker side. This keeps the worker/API separation intact (no new
+- Every dashboard page holds a persistent WebSocket connection
+  (`/ws/queues/{id}`, `/ws/projects/{id}`, `/ws/jobs/{id}`, `/ws/workers`)
+  rather than the request/response pattern everything else in this diagram
+  uses -- the API process re-queries Postgres and re-renders a Jinja2
+  fragment on an interval per open connection, pushing to that one client,
+  rather than anything event-driven from the worker side. This keeps the worker/API separation intact (no new
   cross-process signaling to build) at the cost of a couple seconds of
   push latency, which is fine for a dashboard a human is watching.
 - The AI failure-summary feature is the one place the API process makes

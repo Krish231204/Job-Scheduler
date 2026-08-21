@@ -21,6 +21,18 @@ class Settings(BaseSettings):
     jwt_secret: str = INSECURE_DEFAULT_JWT_SECRET
     jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = 60 * 24
+    # Whether the dashboard session cookie is marked Secure (HTTPS-only).
+    # Unset = follow the environment (Secure in production). The explicit
+    # false is for a production deployment that genuinely has no TLS in
+    # front of it (e.g. an EC2 box reached by bare IP) -- an informed
+    # opt-out, not a default; see docs/DEPLOY_EC2.md.
+    cookie_secure: bool | None = None
+
+    @property
+    def effective_cookie_secure(self) -> bool:
+        if self.cookie_secure is not None:
+            return self.cookie_secure
+        return self.environment == "production"
 
     # AI failure summaries (optional -- falls back to a rule-based summary
     # when unset, see app/services/ai_summary.py)

@@ -55,7 +55,7 @@ per-field errors on a 422). See `app/errors.py`.
 | PATCH | `/queues/{queue_id}` | Update priority / concurrency / retry policy **-- admin/owner** |
 | POST | `/queues/{queue_id}/pause` | Pause (stop claiming new jobs) **-- admin/owner** |
 | POST | `/queues/{queue_id}/resume` | Resume **-- admin/owner** |
-| GET | `/queues/{queue_id}/stats` | Counts by status, throughput, avg duration |
+| GET | `/queues/{queue_id}/stats` | Counts by status, throughput (completed/hour and jobs/sec over the last 5 minutes), avg duration, and p50/p95/p99 latency of successful executions over the same 5-minute window |
 
 ## Jobs
 
@@ -117,10 +117,17 @@ job is cancelled; any other status (including `dead_letter`) keeps it taken.
 `/login`, `/register`, `/dashboard`, `/dashboard/projects/{id}`,
 `/dashboard/queues/{id}`, `/dashboard/jobs/{id}`, `/dashboard/workers`.
 
-`ws://.../ws/queues/{queue_id}` (upgraded from `/dashboard/queues/{id}`)
-pushes a re-rendered stats + job-explorer HTML fragment every ~2 seconds
-for live updates -- auth via the same session cookie, same org-membership
-check as the HTTP page, re-verified on every push.
+Every dashboard page updates live over a WebSocket. Each endpoint pushes a
+re-rendered HTML fragment every ~2 seconds -- auth via the same session
+cookie, same org-membership check as the HTTP page, re-verified on every
+push:
+
+| WebSocket path | Feeds | Fragment |
+|---|---|---|
+| `/ws/queues/{queue_id}` | queue detail | stats tiles + job explorer |
+| `/ws/projects/{project_id}` | project page | per-queue stats table |
+| `/ws/jobs/{job_id}` | job detail (while active) | details + executions + logs |
+| `/ws/workers` | dashboard home + workers page | worker table |
 
 ## Operations
 

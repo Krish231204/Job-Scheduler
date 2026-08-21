@@ -1,0 +1,136 @@
+# Production compose file, sized for a small single host (tested target:
+# AWS EC2 t3.micro -- 2 vCPU, 1 GB RAM; add swap, see docs/DEPLOY_EC2.md).
+#
+#   cp .env.prod.example .env.prod   # then edit: JWT_SECRET is mandatory
+#   docker compose --env-file .env.prod -f docker-compose.prod.yml up -d --build
+#
+# (--env-file is required on every command: compose only interpolates
+# ${...} in this file from `.env` or an explicit --env-file, not from the
+# per-service env_file entries.)
+#
+# Optional HTTPS: point a domain at the instance, set DOMAIN in .env.prod,
+# and start with the https profile (adds a Caddy reverse proxy that
+# provisions Let's Encrypt certificates automatically):
+#
+#   docker compose --env-file .env.prod -f docker-compose.prod.yml --profile https up -d --build
+#
+# Memory limits are deliberate: on a 1 GB host they keep one runaway
+# process from OOM-killing the rest. They add up to ~900 MB; swap covers
+# spikes.
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: jobsched
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env.prod}
+      POSTGRES_DB: jobsched
+    # No published port: only the app containers can reach Postgres.
+    volumes:
+      - jobsched_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U jobsched"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    deploy:
+      resources:
+        limits:
+          memory: 300M
+    env_file: .env.prod
+
+  migrate:
+    build: .
+    restart: "no"
+    command: alembic upgrade head
+    environment:
+      DATABASE_URL: postgresql+asyncpg://jobsched:${POSTGRES_PASSWORD}@db:5432/jobsched
+    env_file: .env.prod
+    depends_on:
+      db:
+        condition: service_healthy
+
+  api:
+    build: .
+    restart: unless-stopped
+    # Plain-HTTP mode: bind 80 directly. With the https profile, set
+    # API_BIND=127.0.0.1:8080 in .env.prod so Caddy owns 80/443 and the
+    # API is only reachable through it (and via localhost for debugging).
+    ports:
+      - "${API_BIND:-80}:8000"
+    environment:
+      ENVIRONMENT: production
+      DATABASE_URL: postgresql+asyncpg://jobsched:${POSTGRES_PASSWORD}@db:5432/jobsched
+    env_file: .env.prod
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    deploy:
+      resources:
+        limits:
+          memory: 300M
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    restart: unless-stopped
+    command: ["python", "-m", "worker.main", "--concurrency", "${WORKER_CONCURRENCY:-4}"]
+    environment:
+      ENVIRONMENT: production
+      DATABASE_URL: postgresql+asyncpg://jobsched:${POSTGRES_PASSWORD}@db:5432/jobsched
+    env_file: .env.prod
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    deploy:
+      resources:
+        limits:
+          memory: 200M
+    # Scale (RAM permitting): docker compose -f docker-compose.prod.yml up -d --scale worker=2
+
+  scheduler:
+    build:
+      context: .
+      dockerfile: Dockerfile.scheduler
+    restart: unless-stopped
+    environment:
+      ENVIRONMENT: production
+      DATABASE_URL: postgresql+asyncpg://jobsched:${POSTGRES_PASSWORD}@db:5432/jobsched
+    env_file: .env.prod
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    deploy:
+      resources:
+        limits:
+          memory: 120M
+
+  # --- optional HTTPS front (profile: https) --------------------------
+  caddy:
+    image: caddy:2-alpine
+    profiles: ["https"]
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      # Required for the https profile; Caddy exits at startup with a
+      # clear error if it's left empty.
+      DOMAIN: ${DOMAIN:-}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - api
+    deploy:
+      resources:
+        limits:
+          memory: 100M
+
+volumes:
+  jobsched_pgdata:
+  caddy_data:
+  caddy_config:
