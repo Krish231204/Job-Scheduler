@@ -19,6 +19,8 @@ import asyncio
 import ipaddress
 from urllib.parse import urlparse
 
+from app.config import get_settings
+
 ALLOWED_SCHEMES = {"http", "https"}
 ALLOWED_PORTS = {80, 443, 8000, 8080, 8443}
 
@@ -28,6 +30,8 @@ class UrlPolicyError(RuntimeError):
 
 
 def _reject_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address, url: str) -> None:
+    if get_settings().watch_allow_private_targets:
+        return  # dev/soak-only escape hatch; see app/config.py
     if (
         ip.is_private
         or ip.is_loopback

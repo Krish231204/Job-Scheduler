@@ -98,8 +98,13 @@ sequenceDiagram
   are separate on purpose -- a load balancer or orchestrator should route
   on readiness, not liveness, or it'll keep sending traffic to a replica
   whose database connection is down but whose process is still alive.
+- The scheduler's tick also materializes due *watches* (the URL-watcher
+  application) as fetch -> diff -> notify job DAGs into per-org watch
+  queues -- the watcher is a consumer of the scheduler, not a parallel
+  system; its checks are ordinary jobs with ordinary retries and DLQ.
 - Every dashboard page holds a persistent WebSocket connection
-  (`/ws/queues/{id}`, `/ws/projects/{id}`, `/ws/jobs/{id}`, `/ws/workers`)
+  (`/ws/queues/{id}`, `/ws/projects/{id}`, `/ws/jobs/{id}`, `/ws/workers`,
+  `/ws/watches`, `/ws/watches/{id}`)
   rather than the request/response pattern everything else in this diagram
   uses -- the API process re-queries Postgres and re-renders a Jinja2
   fragment on an interval per open connection, pushing to that one client,
