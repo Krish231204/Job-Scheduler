@@ -11,7 +11,7 @@ from app.config import INSECURE_DEFAULT_JWT_SECRET, get_settings
 from app.database import get_db
 from app.errors import register_error_handlers
 from app.rate_limit import limiter
-from app.routers import auth, dashboard, jobs, orgs, projects, queues, workers
+from app.routers import auth, dashboard, jobs, orgs, projects, queues, watches, workers
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s [%(name)s] %(message)s")
 
@@ -56,6 +56,7 @@ app.include_router(orgs.router)
 app.include_router(projects.router)
 app.include_router(queues.router)
 app.include_router(jobs.router)
+app.include_router(watches.router)
 app.include_router(workers.router)
 app.include_router(dashboard.router)
 

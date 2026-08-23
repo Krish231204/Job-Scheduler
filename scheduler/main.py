@@ -20,6 +20,7 @@ import signal
 from app.config import get_settings
 from app.database import AsyncSessionLocal
 from app.services.job_service import detect_stale_workers, materialize_due_scheduled_jobs, promote_retrying_jobs
+from app.services.watch_service import materialize_due_watches
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s [%(name)s] %(message)s")
 logger = logging.getLogger("jobsched.scheduler")
@@ -31,13 +32,14 @@ _shutdown = asyncio.Event()
 async def tick() -> None:
     async with AsyncSessionLocal() as db:
         materialized = await materialize_due_scheduled_jobs(db)
+        watches = await materialize_due_watches(db)
         promoted = await promote_retrying_jobs(db)
         requeued = await detect_stale_workers(db, settings.worker_heartbeat_timeout_seconds)
         await db.commit()
-        if materialized or promoted or requeued:
+        if materialized or watches or promoted or requeued:
             logger.info(
-                "tick: materialized=%s promoted_retries=%s requeued_from_stale_workers=%s",
-                materialized, promoted, requeued,
+                "tick: materialized=%s watch_ticks=%s promoted_retries=%s requeued_from_stale_workers=%s",
+                materialized, watches, promoted, requeued,
             )
 
 

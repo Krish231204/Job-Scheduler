@@ -4,7 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.database import get_db
-from app.models import Job, Organization, OrganizationMember, OrgRole, Project, Queue, ScheduledJob, User
+from app.models import Job, Organization, OrganizationMember, OrgRole, Project, Queue, ScheduledJob, User, Watch
 from app.security import get_current_user
 
 _ADMIN_ROLES = (OrgRole.OWNER, OrgRole.ADMIN)
@@ -99,6 +99,22 @@ async def get_scheduled_job_for_user(
     if sj is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Scheduled job not found")
     return sj
+
+
+async def get_watch_for_user(
+    watch_id: int,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> Watch:
+    result = await db.execute(
+        select(Watch)
+        .join(OrganizationMember, OrganizationMember.organization_id == Watch.organization_id)
+        .where(Watch.id == watch_id, OrganizationMember.user_id == user.id)
+    )
+    watch = result.scalar_one_or_none()
+    if watch is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Watch not found")
+    return watch
 
 
 async def get_project_admin(

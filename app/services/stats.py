@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import ExecutionStatus, Job, JobExecution, JobStatus
+from app.models import CheckOutcome, ExecutionStatus, Job, JobExecution, JobStatus, WatchCheck
 
 # Window for the "current rate" metrics (jobs/sec, latency percentiles).
 # Long enough to smooth out poll-interval noise, short enough that the
@@ -92,6 +92,66 @@ async def queue_stats(db: AsyncSession, queue_id: int) -> dict:
         "throughput_last_hour": throughput.scalar() or 0,
         "jobs_per_second": jobs_per_second,
         **percentiles,
+    }
+
+
+async def watch_stats(db: AsyncSession, watch_id: int) -> dict:
+    """Headline numbers for a watch's detail page: lifetime and 24h check
+    counts, 24h ok-rate, and 24h latency percentiles (percentile_cont over
+    recorded check latencies)."""
+    total = (
+        await db.execute(select(func.count(WatchCheck.id)).where(WatchCheck.watch_id == watch_id))
+    ).scalar_one()
+
+    since = datetime.now(timezone.utc) - timedelta(hours=24)
+    row = (
+        await db.execute(
+            select(
+                func.count(WatchCheck.id),
+                func.count(WatchCheck.id).filter(WatchCheck.outcome == CheckOutcome.OK),
+                func.percentile_cont(0.5).within_group(WatchCheck.latency_ms),
+                func.percentile_cont(0.95).within_group(WatchCheck.latency_ms),
+            ).where(WatchCheck.watch_id == watch_id, WatchCheck.started_at >= since)
+        )
+    ).one()
+    checks_24h, ok_24h, p50, p95 = row
+
+    last_latency = (
+        await db.execute(
+            select(WatchCheck.latency_ms)
+            .where(WatchCheck.watch_id == watch_id, WatchCheck.latency_ms.isnot(None))
+            .order_by(WatchCheck.started_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+
+    return {
+        "watch_id": watch_id,
+        "total_checks": total,
+        "checks_24h": checks_24h,
+        "ok_pct_24h": (100.0 * ok_24h / checks_24h) if checks_24h else None,
+        "p50_latency_ms": float(p50) if p50 is not None else None,
+        "p95_latency_ms": float(p95) if p95 is not None else None,
+        "last_latency_ms": last_latency,
+    }
+
+
+async def watch_latency_series(db: AsyncSession, watch_id: int, limit: int = 50) -> dict:
+    """Chronological (time label, latency, outcome) triples for the watch
+    detail page's latency chart -- parallel lists, chart-ready."""
+    rows = (
+        await db.execute(
+            select(WatchCheck.started_at, WatchCheck.latency_ms, WatchCheck.outcome)
+            .where(WatchCheck.watch_id == watch_id)
+            .order_by(WatchCheck.started_at.desc())
+            .limit(limit)
+        )
+    ).all()
+    rows.reverse()
+    return {
+        "labels": [r[0].strftime("%H:%M:%S") for r in rows],
+        "latency_ms": [r[1] for r in rows],
+        "outcomes": [(r[2].value if r[2] else "error") for r in rows],
     }
 
 

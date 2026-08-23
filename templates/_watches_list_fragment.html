@@ -1,0 +1,23 @@
+<div class="card">
+    <h2>Watches <span class="live-indicator">live</span></h2>
+    <div class="table-wrap">
+    <table class="table">
+        <thead><tr><th>Name</th><th>URL</th><th>Condition</th><th>State</th><th>Every</th><th>Last check</th><th>Next check</th></tr></thead>
+        <tbody>
+        {% for w in watches %}
+            <tr onclick="window.location='/dashboard/watches/{{ w.id }}'" class="clickable-row">
+                <td>{{ w.name }}{% if not w.is_active %} <span class="badge">paused</span>{% endif %}</td>
+                <td class="mono">{{ w.url | truncate(48) }}</td>
+                <td class="mono">{{ w.kind.value }}{% if w.keyword %}: “{{ w.keyword }}”{% endif %}</td>
+                <td><span class="badge status-{{ w.state.value }}">{{ w.state.value }}</span></td>
+                <td class="mono">{{ (w.interval_seconds // 60) }}m</td>
+                <td class="mono">{{ w.last_check_at | ts }}</td>
+                <td class="mono">{{ (w.next_check_at | ts) if w.is_active else "–" }}</td>
+            </tr>
+        {% else %}
+            <tr><td colspan="7" class="muted">No watches yet — create one below and it starts checking within seconds.</td></tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    </div>
+</div>
