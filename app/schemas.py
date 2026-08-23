@@ -3,7 +3,17 @@ from typing import Any
 
 from pydantic import BaseModel, EmailStr, Field, model_validator
 
-from app.models import JobStatus, JobType, OrgRole, RetryStrategy, WorkerStatus
+from app.models import (
+    CheckOutcome,
+    JobStatus,
+    JobType,
+    OrgRole,
+    RetryStrategy,
+    WatchAlertKind,
+    WatchKind,
+    WatchState,
+    WorkerStatus,
+)
 
 
 # --------------------------------------------------------------------------
@@ -275,6 +285,82 @@ class ScheduledJobOut(BaseModel):
     created_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+# --------------------------------------------------------------------------
+# Watches
+# --------------------------------------------------------------------------
+
+class WatchCreate(BaseModel):
+    organization_id: int
+    name: str = Field(min_length=1, max_length=255)
+    url: str = Field(min_length=1, max_length=2000)
+    kind: WatchKind
+    keyword: str | None = Field(default=None, max_length=255)
+    interval_seconds: int = Field(default=300, ge=60, le=86400)
+    webhook_url: str | None = Field(default=None, max_length=2000)
+
+    @model_validator(mode="after")
+    def validate_kind_fields(self) -> "WatchCreate":
+        if self.kind == WatchKind.KEYWORD and not (self.keyword and self.keyword.strip()):
+            raise ValueError("keyword is required for keyword watches")
+        return self
+
+
+class WatchOut(BaseModel):
+    id: int
+    organization_id: int
+    queue_id: int
+    name: str
+    url: str
+    kind: WatchKind
+    keyword: str | None
+    interval_seconds: int
+    webhook_url: str | None
+    is_active: bool
+    state: WatchState
+    consecutive_failures: int
+    last_check_at: datetime | None
+    next_check_at: datetime | None
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class WatchCheckOut(BaseModel):
+    id: int
+    watch_id: int
+    started_at: datetime
+    latency_ms: int | None
+    http_status: int | None
+    outcome: CheckOutcome | None
+    keyword_found: bool | None
+    detail: str | None
+
+    model_config = {"from_attributes": True}
+
+
+class WatchAlertOut(BaseModel):
+    id: int
+    watch_id: int
+    check_id: int | None
+    kind: WatchAlertKind
+    message: str
+    delivered: bool
+    delivery_detail: str | None
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class WatchStats(BaseModel):
+    watch_id: int
+    total_checks: int
+    checks_24h: int
+    ok_pct_24h: float | None = None
+    p50_latency_ms: float | None = None
+    p95_latency_ms: float | None = None
+    last_latency_ms: int | None = None
 
 
 # --------------------------------------------------------------------------

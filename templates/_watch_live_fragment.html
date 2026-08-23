@@ -1,0 +1,52 @@
+<div class="stats-grid">
+    <div class="stat"><span class="stat-value"><span class="badge status-{{ watch.state.value }}" style="font-size:0.95rem">{{ watch.state.value }}</span></span><span class="stat-label">State</span></div>
+    <div class="stat"><span class="stat-value">{{ stats.checks_24h }}</span><span class="stat-label">Checks (24h)</span></div>
+    <div class="stat"><span class="stat-value">{{ stats.total_checks }}</span><span class="stat-label">Checks (all time)</span></div>
+    <div class="stat"><span class="stat-value">{{ (stats.ok_pct_24h | round(1)) if stats.ok_pct_24h is not none else "–" }}<span class="stat-unit">%</span></span><span class="stat-label">OK rate (24h)</span></div>
+    <div class="stat"><span class="stat-value">{{ (stats.p50_latency_ms | round(0) | int) if stats.p50_latency_ms is not none else "–" }}<span class="stat-unit">ms</span></span><span class="stat-label">p50 latency (24h)</span></div>
+    <div class="stat"><span class="stat-value">{{ (stats.p95_latency_ms | round(0) | int) if stats.p95_latency_ms is not none else "–" }}<span class="stat-unit">ms</span></span><span class="stat-label">p95 latency (24h)</span></div>
+    <div class="stat"><span class="stat-value">{{ stats.last_latency_ms if stats.last_latency_ms is not none else "–" }}<span class="stat-unit">ms</span></span><span class="stat-label">Last check</span></div>
+</div>
+
+<div class="card">
+    <h2>Check latency <span class="live-indicator">live</span></h2>
+    <div class="chart-wrap"><canvas id="latencyChart"></canvas></div>
+    <script type="application/json" id="latency-data">{{ series | tojson }}</script>
+</div>
+
+<div class="card">
+    <h2>Check history</h2>
+    <div class="table-wrap">
+    <table class="table">
+        <thead><tr><th>When</th><th>Outcome</th><th>HTTP</th><th>Latency</th><th>Detail</th></tr></thead>
+        <tbody>
+        {% for c in checks %}
+            <tr>
+                <td class="mono">{{ c.started_at | ts }}</td>
+                <td><span class="badge status-{{ c.outcome.value if c.outcome else 'error' }}">{{ c.outcome.value if c.outcome else "pending" }}</span></td>
+                <td class="mono">{{ c.http_status if c.http_status is not none else "–" }}</td>
+                <td class="mono">{{ (c.latency_ms ~ "ms") if c.latency_ms is not none else "–" }}</td>
+                <td class="muted">{{ c.detail or ("keyword found" if c.keyword_found else "") }}</td>
+            </tr>
+        {% else %}
+            <tr><td colspan="5" class="muted">No checks yet — the first one runs within seconds of creation.</td></tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    </div>
+</div>
+
+<div class="card">
+    <h2>Alerts</h2>
+    <ul class="log-list">
+    {% for a in alerts %}
+        <li class="{{ 'log-error' if a.kind.value in ('triggered', 'broken') else '' }}">
+            <span class="muted">{{ a.created_at | ts }}</span>
+            [{{ a.kind.value }}] {{ a.message }}
+            <span class="muted">({{ a.delivery_detail or ("delivered" if a.delivered else "pending delivery") }})</span>
+        </li>
+    {% else %}
+        <li class="muted">No alerts yet. Alerts fire on state transitions only — one per incident, not one per check.</li>
+    {% endfor %}
+    </ul>
+</div>

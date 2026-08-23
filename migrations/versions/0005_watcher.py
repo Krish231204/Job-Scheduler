@@ -70,6 +70,7 @@ def upgrade() -> None:
         sa.Column("latency_ms", sa.Integer(), nullable=True),
         sa.Column("http_status", sa.Integer(), nullable=True),
         sa.Column("content_hash", sa.String(64), nullable=True),
+        sa.Column("keyword_found", sa.Boolean(), nullable=True),
         sa.Column("outcome", check_outcome, nullable=True),
         sa.Column("detail", sa.Text(), nullable=True),
     )

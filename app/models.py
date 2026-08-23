@@ -478,6 +478,8 @@ class WatchCheck(Base):
     latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     http_status: Mapped[int | None] = mapped_column(Integer, nullable=True)
     content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # Computed at fetch time for kind=keyword (the body isn't stored).
+    keyword_found: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     outcome: Mapped[CheckOutcome | None] = mapped_column(
         Enum(CheckOutcome, name="check_outcome", values_callable=_enum_values), nullable=True
     )

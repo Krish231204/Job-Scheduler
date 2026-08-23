@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+{% block title %}Watch: {{ watch.name }}{% endblock %}
+{% block content %}
+<a class="breadcrumb" href="/dashboard/watches">&larr; <span>Back to watches</span></a>
+<h1>{{ watch.name }} {% if not watch.is_active %}<span class="badge">paused</span>{% endif %}</h1>
+<p class="muted mono" style="margin-top:-10px">
+    {{ watch.kind.value }}{% if watch.keyword %}: “{{ watch.keyword }}”{% endif %}
+    · {{ watch.url }}
+    · every {{ watch.interval_seconds // 60 }}m
+    {% if watch.webhook_url %}· webhook configured{% endif %}
+</p>
+
+<div class="card" style="padding:12px 20px">
+    {% if watch.is_active %}
+    <button type="button" class="button-secondary button-small" onclick="postAndReload('/watches/{{ watch.id }}/pause')">Pause</button>
+    {% else %}
+    <button type="button" class="button-small" onclick="postAndReload('/watches/{{ watch.id }}/resume')">Resume</button>
+    {% endif %}
+    <button type="button" class="button-secondary button-small" onclick="deleteWatch()">Delete</button>
+</div>
+
+<div id="watch-live">
+{% include "_watch_live_fragment.html" %}
+</div>
+
+<script src="/static/vendor/chart.umd.min.js"></script>
+<script>
+function postAndReload(url) {
+    fetch(url, { method: "POST", credentials: "include" }).then(() => window.location.reload());
+}
+
+function deleteWatch() {
+    if (!confirm("Delete this watch and its whole check history?")) return;
+    fetch("/watches/{{ watch.id }}", { method: "DELETE", credentials: "include" })
+        .then(() => window.location = "/dashboard/watches");
+}
+
+// Latency chart: rebuilt from the fragment's JSON payload on every live
+// update (the WebSocket swap replaces the canvas node itself).
+let latencyChart = null;
+
+function cssVar(name) {
+    return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+}
+
+function renderLatencyChart() {
+    const dataEl = document.getElementById("latency-data");
+    const canvas = document.getElementById("latencyChart");
+    if (!dataEl || !canvas) return;
+    const series = JSON.parse(dataEl.textContent);
+    if (latencyChart) latencyChart.destroy();
+
+    const pointColors = series.outcomes.map((o) =>
+        o === "ok" ? cssVar("--chart-series") : o === "triggered" ? cssVar("--chart-critical") : cssVar("--chart-warn")
+    );
+
+    latencyChart = new Chart(canvas, {
+        type: "line",
+        data: {
+            labels: series.labels,
+            datasets: [{
+                label: "Latency (ms)",
+                data: series.latency_ms,
+                borderColor: cssVar("--chart-series"),
+                borderWidth: 2,
+                pointRadius: 4,
+                pointBackgroundColor: pointColors,
+                pointBorderColor: cssVar("--panel"),
+                pointBorderWidth: 1,
+                tension: 0.15,
+                spanGaps: true,
+            }],
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            scales: {
+                x: { ticks: { color: cssVar("--chart-tick"), maxTicksLimit: 10 }, grid: { display: false } },
+                y: {
+                    beginAtZero: true,
+                    ticks: { color: cssVar("--chart-tick") },
+                    grid: { color: cssVar("--chart-grid") },
+                    border: { display: false },
+                },
+            },
+            plugins: { legend: { display: false } },
+        },
+    });
+}
+
+document.addEventListener("DOMContentLoaded", function () {
+    renderLatencyChart();
+    connectLive("/ws/watches/{{ watch.id }}", "watch-live", { onUpdate: renderLatencyChart });
+});
+document.addEventListener("themechange", renderLatencyChart);
+window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", renderLatencyChart);
+</script>
+{% endblock %}

@@ -12,6 +12,7 @@ from app.config import get_settings
 from app.database import AsyncSessionLocal
 from app.models import Job, JobExecution, JobStatus, Queue, RetryPolicy, Worker, WorkerHeartbeat, WorkerStatus
 from app.services.job_service import claim_jobs, complete_execution, fail_execution, start_execution
+import worker.watch_handlers  # noqa: F401  - registers the watch_* handlers
 from worker.handlers import get_handler
 from worker.naming import generate_worker_name
 

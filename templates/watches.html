@@ -1,0 +1,96 @@
+{% extends "base.html" %}
+{% block title %}Watches{% endblock %}
+{% block content %}
+<h1>Watches</h1>
+<p class="muted" style="margin-top:-10px">Point a watch at any public URL and get alerted when it goes down, when a
+keyword appears, or when the content changes. Checks run on the scheduler as a fetch → diff → notify job pipeline.</p>
+
+<div id="watches-live">
+{% include "_watches_list_fragment.html" %}
+</div>
+
+<div class="card">
+    <h2>Create a watch</h2>
+    <form id="watchForm" onsubmit="return submitWatch(event)">
+        {% if orgs | length > 1 %}
+        <label>Organization
+            <select id="wf-org">
+                {% for o in orgs %}<option value="{{ o.id }}">{{ o.name }}</option>{% endfor %}
+            </select>
+        </label>
+        {% else %}
+        <input type="hidden" id="wf-org" value="{{ orgs[0].id if orgs }}">
+        {% endif %}
+
+        <label>Name <input type="text" id="wf-name" required placeholder="e.g. Homepage up"></label>
+        <label>URL <input type="url" id="wf-url" required placeholder="https://example.com/status"></label>
+
+        <label>Condition
+            <select id="wf-kind" onchange="document.getElementById('wf-keyword-row').style.display = this.value === 'keyword' ? 'block' : 'none'">
+                <option value="down">Endpoint down — alert on errors or HTTP ≥ 400</option>
+                <option value="keyword">Keyword appears — alert when a word/phrase shows up</option>
+                <option value="content_change">Content changes — alert when the page content changes</option>
+            </select>
+        </label>
+        <div id="wf-keyword-row" style="display:none">
+            <label>Keyword <input type="text" id="wf-keyword" placeholder="e.g. sold out"></label>
+        </div>
+
+        <label>Check every
+            <select id="wf-interval">
+                <option value="60">1 minute</option>
+                <option value="300" selected>5 minutes</option>
+                <option value="900">15 minutes</option>
+                <option value="3600">1 hour</option>
+                <option value="86400">24 hours</option>
+            </select>
+        </label>
+
+        <label>Webhook URL <input type="url" id="wf-webhook" placeholder="optional — POSTed on every alert"></label>
+
+        <p id="wf-error" class="error" style="display:none"></p>
+        <button type="submit">Create watch</button>
+    </form>
+</div>
+
+<script>
+document.addEventListener("DOMContentLoaded", function () {
+    connectLive("/ws/watches", "watches-live");
+});
+
+async function submitWatch(evt) {
+    evt.preventDefault();
+    const errorEl = document.getElementById("wf-error");
+    errorEl.style.display = "none";
+    const body = {
+        organization_id: Number(document.getElementById("wf-org").value),
+        name: document.getElementById("wf-name").value.trim(),
+        url: document.getElementById("wf-url").value.trim(),
+        kind: document.getElementById("wf-kind").value,
+        keyword: document.getElementById("wf-keyword").value.trim() || null,
+        interval_seconds: Number(document.getElementById("wf-interval").value),
+        webhook_url: document.getElementById("wf-webhook").value.trim() || null,
+    };
+    try {
+        const res = await fetch("/watches", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+            credentials: "include",
+        });
+        if (!res.ok) {
+            const errBody = await res.json().catch(() => null);
+            errorEl.textContent = (errBody && errBody.error && errBody.error.message) || `Request failed (${res.status})`;
+            errorEl.style.display = "block";
+            return false;
+        }
+        const watch = await res.json();
+        window.location = `/dashboard/watches/${watch.id}`;
+    } catch (e) {
+        errorEl.textContent = "Network error: " + e.message;
+        errorEl.style.display = "block";
+    }
+    return false;
+}
+</script>
+{% endblock %}
