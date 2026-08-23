@@ -33,6 +33,7 @@ from datetime import datetime, timezone
 import httpx
 from sqlalchemy import select
 
+from app.config import get_settings
 from app.database import AsyncSessionLocal
 from app.models import (
     CheckOutcome,
@@ -50,11 +51,14 @@ from worker.handlers import register
 logger = logging.getLogger("jobsched.watch")
 
 USER_AGENT = "jobsched-watchbot/1.0 (+https://github.com/Krish231204/Job-Scheduler)"
-DOMAIN_MIN_INTERVAL_SECONDS = 10.0
 MAX_BODY_BYTES = 512 * 1024
 MAX_REDIRECTS = 3
 ROBOTS_CACHE_TTL_SECONDS = 3600.0
 FETCH_TIMEOUT = httpx.Timeout(15.0, connect=10.0)
+# One SSL context for all fetch clients: building a context per
+# AsyncClient costs ~100ms (certificate store load) and dominates check
+# latency. Clients themselves stay per-fetch (they're event-loop-bound).
+_SSL_CONTEXT = httpx.create_ssl_context()
 
 _robots_cache: dict[str, tuple[urllib.robotparser.RobotFileParser | None, float]] = {}
 _domain_last_fetch: dict[str, float] = {}
@@ -65,11 +69,12 @@ async def _respect_domain_rate_limit(host: str) -> None:
     """Serialize per-host pacing decisions, then sleep out any remainder.
     In-process only: with multiple worker processes the limit is
     best-effort, which watch intervals >= 60s keep comfortably polite."""
+    min_interval = get_settings().watch_domain_min_interval_seconds
     async with _rate_lock:
         now = time.monotonic()
         last = _domain_last_fetch.get(host, 0.0)
-        wait = max(0.0, DOMAIN_MIN_INTERVAL_SECONDS - (now - last))
-        _domain_last_fetch[host] = max(now, last + DOMAIN_MIN_INTERVAL_SECONDS) if wait else now
+        wait = max(0.0, min_interval - (now - last))
+        _domain_last_fetch[host] = max(now, last + min_interval) if wait else now
     if wait:
         await asyncio.sleep(wait)
 
@@ -109,7 +114,7 @@ async def fetch_url_checked(url: str) -> tuple[int, str]:
     """GET a URL with the full safety stack. Returns (status_code, body_text).
     Raises UrlPolicyError on policy blocks, httpx/ConnectionError on
     network-level failures."""
-    async with httpx.AsyncClient(timeout=FETCH_TIMEOUT, follow_redirects=False) as client:
+    async with httpx.AsyncClient(timeout=FETCH_TIMEOUT, follow_redirects=False, verify=_SSL_CONTEXT) as client:
         current = url
         for _ in range(MAX_REDIRECTS + 1):
             host = await ensure_public_url(current)
@@ -280,14 +285,14 @@ async def watch_notify(payload: dict) -> dict:
 
     delivered = 0
     for alert_id, kind, message, created_at in alert_data:
-        delivery_detail = "dashboard only (no webhook configured)"
+        delivery_detail = "dashboard only"
         if webhook_url:
             # Webhook targets get the same SSRF guard as watch targets. A
             # failed delivery raises: the tick retries, and because
             # `delivered` only flips after success, the next tick's notify
             # picks unsent alerts back up (idempotent catch-up).
             await ensure_public_url(webhook_url)
-            async with httpx.AsyncClient(timeout=FETCH_TIMEOUT) as client:
+            async with httpx.AsyncClient(timeout=FETCH_TIMEOUT, verify=_SSL_CONTEXT) as client:
                 resp = await client.post(
                     webhook_url,
                     headers={"User-Agent": USER_AGENT},
