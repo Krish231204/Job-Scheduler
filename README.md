@@ -245,6 +245,18 @@ robots lookup (cached), and the HTTP round trip. At real-world intervals
 (≥ 1 minute) a single t3.micro worker therefore has ~60× headroom over a
 hundred active watches.
 
+**Live production watch** (dogfooding): the EC2 deployment runs a real
+`down` watch every 5 minutes against
+[CortexOne](https://cortex-one-three.vercel.app), another of my deployed
+projects (Vercel + Neon Postgres). First live check (2026-08-23, from
+eu-north-1): HTTP 200 in **12,447 ms** — not the watcher being slow, but
+the watch catching CortexOne's full cold start (Neon suspends idle
+database compute; the first request pays the resume plus Vercel's
+function cold start, warm hits are a few hundred ms). Exactly the kind of
+behavior a latency-recording uptime watch exists to surface; the per-check
+history and 24h p50/p95 on the watch's dashboard page track it
+continuously.
+
 ## Operations
 
 - `GET /health/live` — process-alive check, no dependencies.
