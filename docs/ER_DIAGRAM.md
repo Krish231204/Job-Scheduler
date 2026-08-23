@@ -173,3 +173,24 @@ both "the definition" and "the most recent occurrence," which made querying
 "show me all jobs from this schedule" and "is this schedule still active"
 awkward together. Keeping them separate also matches the assignment's
 explicit entity list.
+
+## Additions from the watcher pass (2026-08-23)
+
+New tables (not yet in the rendered diagram above — the Mermaid/PNG shows
+the pre-watcher schema):
+
+- `job_dependencies (job_id, depends_on_job_id)` — directed edges in the
+  job DAG; both FKs cascade with the jobs. Unique per edge; indexed both
+  directions (children of a job / parents of a job). Paired with the new
+  `blocked` value in `job_status` and `jobs.timeout_seconds`.
+- `watches` — the user-facing watch definition (org-scoped, kind +
+  keyword + interval + optional webhook, state machine
+  unknown/ok/triggered/broken, failure streak, link to the last fetch
+  job). `next_check_at` is indexed for the scheduler's due-scan.
+- `watch_checks` — one row per executed check: latency, HTTP status,
+  normalized content hash, keyword hit, outcome. Indexed by
+  `(watch_id, started_at)` for the history/chart queries.
+- `watch_alerts` — transition alerts; `dedupe_key` is UNIQUE, which is
+  what makes alerting idempotent under retries and races. Delivery state
+  (`delivered`, `delivery_detail`) lives here so the notify job can catch
+  up on undelivered alerts.

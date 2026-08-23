@@ -47,6 +47,16 @@ class Settings(BaseSettings):
     # Scheduler
     scheduler_poll_interval_seconds: float = 1.0
 
+    # Watcher
+    # DANGER: dev/soak-only escape hatch. True disables the SSRF guard's
+    # private-address rejection so watches can target localhost (local
+    # demos, the soak benchmark). Never enable in a multi-tenant
+    # deployment -- it lets any tenant probe the private network.
+    watch_allow_private_targets: bool = False
+    # Minimum spacing between fetches to the same host (per worker
+    # process). Lowered to 0 by the soak benchmark.
+    watch_domain_min_interval_seconds: float = 10.0
+
 
 @lru_cache
 def get_settings() -> Settings:

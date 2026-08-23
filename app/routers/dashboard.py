@@ -11,7 +11,7 @@ from sqlalchemy.orm import selectinload
 
 from app.config import get_settings
 from app.database import get_db
-from app.deps import get_job_for_user, get_project_for_user, get_queue_for_user, get_queue_role
+from app.deps import get_job_for_user, get_project_for_user, get_queue_for_user, get_queue_role, get_watch_for_user
 from app.models import (
     Job,
     JobStatus,
@@ -22,11 +22,14 @@ from app.models import (
     Queue,
     ScheduledJob,
     User,
+    Watch,
+    WatchAlert,
+    WatchCheck,
     Worker,
 )
 from app.rate_limit import limiter
 from app.security import create_access_token, decode_token, hash_password, verify_password
-from app.services.stats import queue_health_series, queue_stats
+from app.services.stats import queue_health_series, queue_stats, watch_latency_series, watch_stats
 from app.web_auth import COOKIE_NAME, get_current_user_from_cookie, require_web_user
 
 WS_UPDATE_INTERVAL_SECONDS = 2.0
@@ -387,6 +390,89 @@ async def ws_job_updates(websocket: WebSocket, job_id: int, db: AsyncSession = D
         if job is None:
             return None
         return templates.get_template("_job_live_fragment.html").render(job=job)
+
+    await _ws_live_loop(websocket, db, render_tick)
+
+
+async def _user_watches(db: AsyncSession, user_id: int) -> list[Watch]:
+    result = await db.execute(
+        select(Watch)
+        .join(OrganizationMember, OrganizationMember.organization_id == Watch.organization_id)
+        .where(OrganizationMember.user_id == user_id)
+        .order_by(Watch.created_at.desc())
+    )
+    return list(result.scalars().all())
+
+
+@router.get("/dashboard/watches", response_class=HTMLResponse)
+async def dashboard_watches(request: Request, db: AsyncSession = Depends(get_db), user: User = Depends(require_web_user)):
+    watches = await _user_watches(db, user.id)
+    orgs_result = await db.execute(
+        select(Organization)
+        .join(OrganizationMember, OrganizationMember.organization_id == Organization.id)
+        .where(OrganizationMember.user_id == user.id)
+    )
+    orgs = list(orgs_result.scalars().all())
+    return templates.TemplateResponse(request, "watches.html", {"user": user, "watches": watches, "orgs": orgs})
+
+
+async def _watch_detail_context(db: AsyncSession, watch: Watch) -> dict:
+    stats = await watch_stats(db, watch.id)
+    series = await watch_latency_series(db, watch.id)
+    checks = list(
+        (
+            await db.execute(
+                select(WatchCheck).where(WatchCheck.watch_id == watch.id).order_by(WatchCheck.started_at.desc()).limit(30)
+            )
+        ).scalars().all()
+    )
+    alerts = list(
+        (
+            await db.execute(
+                select(WatchAlert).where(WatchAlert.watch_id == watch.id).order_by(WatchAlert.created_at.desc()).limit(20)
+            )
+        ).scalars().all()
+    )
+    return {"watch": watch, "stats": stats, "series": series, "checks": checks, "alerts": alerts}
+
+
+@router.get("/dashboard/watches/{watch_id}", response_class=HTMLResponse)
+async def dashboard_watch(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_web_user),
+    watch: Watch = Depends(get_watch_for_user),
+):
+    context = await _watch_detail_context(db, watch)
+    return templates.TemplateResponse(request, "watch_detail.html", {"user": user, **context})
+
+
+@router.websocket("/ws/watches")
+async def ws_watches_list(websocket: WebSocket, db: AsyncSession = Depends(get_db)):
+    """Live watches table for the watches list page."""
+
+    async def render_tick(db: AsyncSession, user_id: int) -> str:
+        watches = await _user_watches(db, user_id)
+        return templates.get_template("_watches_list_fragment.html").render(watches=watches)
+
+    await _ws_live_loop(websocket, db, render_tick)
+
+
+@router.websocket("/ws/watches/{watch_id}")
+async def ws_watch_detail(websocket: WebSocket, watch_id: int, db: AsyncSession = Depends(get_db)):
+    """Live stats/chart/history for the watch detail page."""
+
+    async def render_tick(db: AsyncSession, user_id: int) -> str | None:
+        result = await db.execute(
+            select(Watch)
+            .join(OrganizationMember, OrganizationMember.organization_id == Watch.organization_id)
+            .where(Watch.id == watch_id, OrganizationMember.user_id == user_id)
+        )
+        watch = result.scalar_one_or_none()
+        if watch is None:
+            return None
+        context = await _watch_detail_context(db, watch)
+        return templates.get_template("_watch_live_fragment.html").render(**context)
 
     await _ws_live_loop(websocket, db, render_tick)
 

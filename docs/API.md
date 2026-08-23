@@ -96,7 +96,16 @@ directly (a bare Job row can't keep firing on a cron):
 
 All job-creation requests also accept optional `priority`, `idempotency_key`,
 `max_retries`, and `retry_strategy` to override the queue's default retry
-policy for that one job.
+policy for that one job — plus:
+
+- `depends_on: [job_ids]` — DAG dependencies (parents must be jobs on the
+  same queue). The job is created `blocked`, becomes `queued` when every
+  parent completes, and is skipped (`cancelled`, with a log line) if a
+  parent dead-letters or is cancelled. Cancelling a job also skips its
+  blocked subtree.
+- `timeout_seconds` — wall-clock limit per execution attempt; on expiry
+  the worker cancels the handler and the attempt fails into the normal
+  retry path.
 
 **`idempotency_key` semantics:** submitting the same key twice on the same
 queue returns the *existing* job (HTTP 201 with the original job's `id`)
@@ -104,6 +113,25 @@ rather than creating a second one — safe for a client retrying a POST after
 a timeout. Enforced by a database-level partial unique index, so it holds
 even for requests arriving simultaneously. A key becomes reusable once its
 job is cancelled; any other status (including `dead_letter`) keeps it taken.
+
+## Watches
+
+Multi-tenant: creation requires membership of `organization_id`; every
+other endpoint resolves the watch through the caller's memberships (other
+orgs' watches are 404). Watch checks run as fetch → diff → notify job
+DAGs in an auto-provisioned per-org `watch-checks` queue.
+
+| Method | Path | Description |
+|---|---|---|
+| POST | `/watches` | Create (name, url, kind: `down`/`keyword`/`content_change`, keyword?, interval_seconds ≥ 60, webhook_url?) — URL must be public http/https (SSRF guard) |
+| GET | `/watches` | List watches across the caller's organizations |
+| GET | `/watches/{id}` | Watch detail |
+| GET | `/watches/{id}/stats` | Check counts, 24h ok-rate, p50/p95 check latency |
+| GET | `/watches/{id}/checks` | Check history (latency, HTTP status, outcome) |
+| GET | `/watches/{id}/alerts` | Transition alerts (idempotent, dedupe-keyed) |
+| POST | `/watches/{id}/pause` | Stop checking |
+| POST | `/watches/{id}/resume` | Resume (a `broken` watch restarts with a clean slate) |
+| DELETE | `/watches/{id}` | Delete watch + its history |
 
 ## Workers
 
@@ -128,6 +156,8 @@ push:
 | `/ws/projects/{project_id}` | project page | per-queue stats table |
 | `/ws/jobs/{job_id}` | job detail (while active) | details + executions + logs |
 | `/ws/workers` | dashboard home + workers page | worker table |
+| `/ws/watches` | watches list | watch table with states |
+| `/ws/watches/{watch_id}` | watch detail | stats + latency chart + history + alerts |
 
 ## Operations
 

@@ -124,11 +124,13 @@ def _ensure_database_exists(url: str) -> None:
 
 
 async def _reset_schema(url: str) -> None:
+    # Drop + recreate rather than truncate: the bench DB may hold a stale
+    # schema from an older code revision, and create_all skips existing
+    # tables.
     engine = create_async_engine(url)
     async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.drop_all)
         await conn.run_sync(Base.metadata.create_all)
-        table_list = ", ".join(t.name for t in Base.metadata.sorted_tables)
-        await conn.execute(text(f"TRUNCATE {table_list} RESTART IDENTITY CASCADE"))
     await engine.dispose()
 
 

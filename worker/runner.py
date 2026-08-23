@@ -12,11 +12,26 @@ from app.config import get_settings
 from app.database import AsyncSessionLocal
 from app.models import Job, JobExecution, JobStatus, Queue, RetryPolicy, Worker, WorkerHeartbeat, WorkerStatus
 from app.services.job_service import claim_jobs, complete_execution, fail_execution, start_execution
+import worker.watch_handlers  # noqa: F401  - registers the watch_* handlers
 from worker.handlers import get_handler
 from worker.naming import generate_worker_name
 
 logger = logging.getLogger("jobsched.worker")
 settings = get_settings()
+
+
+async def run_handler_with_timeout(handler, payload: dict, timeout_seconds: float | None):
+    """Run a job handler, enforcing the job's per-execution wall-clock
+    limit. asyncio.wait_for cancels the handler coroutine on expiry, and
+    the raised error carries a readable message so the execution record /
+    retry log says what actually happened instead of a blank TimeoutError.
+    """
+    if not timeout_seconds:
+        return await handler(payload)
+    try:
+        return await asyncio.wait_for(handler(payload), timeout=timeout_seconds)
+    except TimeoutError:
+        raise RuntimeError(f"Execution timed out after {timeout_seconds:g}s") from None
 
 
 class WorkerRunner:
@@ -151,6 +166,7 @@ class WorkerRunner:
                 execution = await start_execution(db, job, self.worker_id)
                 execution_id = execution.id
                 job_name, job_payload = job.name, dict(job.payload)
+                job_timeout = job.timeout_seconds
                 queue_result = await db.execute(
                     select(Queue).options(selectinload(Queue.retry_policy)).where(Queue.id == job.queue_id)
                 )
@@ -164,7 +180,7 @@ class WorkerRunner:
             handler = get_handler(job_name)
             start = time.monotonic()
             try:
-                result = await handler(job_payload)
+                result = await run_handler_with_timeout(handler, job_payload, job_timeout)
                 async with AsyncSessionLocal() as db:
                     job = await db.get(Job, job_id)
                     execution = await db.get(JobExecution, execution_id)
@@ -172,13 +188,14 @@ class WorkerRunner:
                     await db.commit()
                 logger.info("Job %s completed in %.2fs", job_id, time.monotonic() - start)
             except Exception as exc:  # noqa: BLE001 - job handler errors must not crash the worker
+                error = str(exc) or exc.__class__.__name__
                 async with AsyncSessionLocal() as db:
                     job = await db.get(Job, job_id)
                     execution = await db.get(JobExecution, execution_id)
                     retry_policy = await db.get(RetryPolicy, retry_policy_id) if retry_policy_id else None
-                    await fail_execution(db, job, execution, retry_policy, str(exc))
+                    await fail_execution(db, job, execution, retry_policy, error)
                     await db.commit()
-                logger.warning("Job %s failed: %s", job_id, exc)
+                logger.warning("Job %s failed: %s", job_id, error)
 
     async def run(self) -> None:
         await self.register()
