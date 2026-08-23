@@ -13,13 +13,14 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 from croniter import croniter
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import (
     DeadLetterEntry,
     Job,
+    JobDependency,
     JobExecution,
     JobLog,
     JobStatus,
@@ -57,10 +58,18 @@ async def create_job(
     retry_strategy: RetryStrategy | None = None,
     batch_id: str | None = None,
     scheduled_job_id: int | None = None,
+    depends_on: list[int] | None = None,
+    timeout_seconds: float | None = None,
 ) -> Job:
     """Create a single job row. Idempotent when idempotency_key is supplied
     and already present (unresolved) on the queue: returns the existing job
     instead of creating a duplicate.
+
+    `depends_on` makes this job a DAG node: it is created BLOCKED until
+    every listed parent job COMPLETEs (promotion happens in
+    complete_execution via _promote_dependents). If a parent has already
+    failed terminally, the job is created CANCELLED immediately -- same
+    outcome the skip cascade would produce, just without the detour.
 
     The guarantee is enforced by a partial unique index (migration 0003),
     not by the SELECT below -- the SELECT is only a fast path that avoids
@@ -90,6 +99,21 @@ async def create_job(
     else:
         raise ValueError(f"Unsupported job_type {job_type}")
 
+    skip_reason: str | None = None
+    if depends_on:
+        parents_result = await db.execute(
+            select(Job).where(Job.id.in_(depends_on), Job.queue_id == queue.id)
+        )
+        parents = list(parents_result.scalars().all())
+        if len(parents) != len(set(depends_on)):
+            raise ValueError("depends_on references jobs that don't exist on this queue")
+        terminal = [p for p in parents if p.status in (JobStatus.DEAD_LETTER, JobStatus.CANCELLED)]
+        if terminal:
+            status = JobStatus.CANCELLED
+            skip_reason = f"Skipped: upstream job #{terminal[0].id} is {terminal[0].status.value}"
+        elif not all(p.status == JobStatus.COMPLETED for p in parents):
+            status = JobStatus.BLOCKED
+
     job = Job(
         queue_id=queue.id,
         scheduled_job_id=scheduled_job_id,
@@ -103,10 +127,12 @@ async def create_job(
         run_at=effective_run_at,
         max_retries_override=max_retries,
         retry_strategy_override=retry_strategy,
+        timeout_seconds=timeout_seconds,
     )
     if not idempotency_key:
         db.add(job)
         await db.flush()
+        await _record_dependencies(db, job, depends_on, skip_reason)
         return job
 
     # Both the add and the flush go inside the SAVEPOINT so that losing the
@@ -129,7 +155,18 @@ async def create_job(
         if found is not None:
             return found
         raise  # unique violation from something other than the idempotency race
+    await _record_dependencies(db, job, depends_on, skip_reason)
     return job
+
+
+async def _record_dependencies(db: AsyncSession, job: Job, depends_on: list[int] | None, skip_reason: str | None) -> None:
+    if not depends_on:
+        return
+    for parent_id in set(depends_on):
+        db.add(JobDependency(job_id=job.id, depends_on_job_id=parent_id))
+    if skip_reason:
+        db.add(JobLog(job_id=job.id, level=LogLevel.WARNING, message=skip_reason))
+    await db.flush()
 
 
 async def _find_live_job_by_key(db: AsyncSession, queue_id: int, idempotency_key: str) -> Job | None:
@@ -249,6 +286,71 @@ async def complete_execution(db: AsyncSession, job: Job, execution: JobExecution
     job.completed_at = now
     db.add(JobLog(job_id=job.id, execution_id=execution.id, level=LogLevel.INFO, message="Job completed successfully"))
     await db.flush()
+    await _promote_dependents(db, job)
+
+
+async def _promote_dependents(db: AsyncSession, job: Job) -> int:
+    """Unblock jobs that were waiting on `job` once ALL their parents have
+    completed. The dependent row is locked with a *waiting* FOR UPDATE
+    (not SKIP LOCKED) on purpose: when two parents of the same child
+    complete concurrently, each transaction's snapshot may miss the
+    other's not-yet-committed COMPLETED status. Serializing on the child
+    row means the second completer re-reads parent statuses after the
+    first has committed, so exactly one of them performs the promotion
+    and none is missed.
+    """
+    dependent_ids = (
+        await db.execute(select(JobDependency.job_id).where(JobDependency.depends_on_job_id == job.id))
+    ).scalars().all()
+    promoted = 0
+    now = datetime.now(timezone.utc)
+    for dep_id in dependent_ids:
+        dependent = (
+            await db.execute(select(Job).where(Job.id == dep_id).with_for_update())
+        ).scalar_one_or_none()
+        if dependent is None or dependent.status != JobStatus.BLOCKED:
+            continue
+        unmet = (
+            await db.execute(
+                select(func.count(JobDependency.id))
+                .join(Job, Job.id == JobDependency.depends_on_job_id)
+                .where(JobDependency.job_id == dep_id, Job.status != JobStatus.COMPLETED)
+            )
+        ).scalar_one()
+        if unmet == 0:
+            dependent.status = JobStatus.QUEUED
+            dependent.run_at = now
+            db.add(JobLog(job_id=dep_id, level=LogLevel.INFO, message="All dependencies completed; job queued"))
+            promoted += 1
+    await db.flush()
+    return promoted
+
+
+async def _skip_dependents(db: AsyncSession, job: Job, reason: str) -> int:
+    """Cancel the entire BLOCKED subtree downstream of a terminally-failed
+    job (dead-lettered or cancelled). Leaving them BLOCKED would strand
+    them forever -- their parent can never COMPLETE. Iterative BFS so a
+    fetch -> diff -> notify chain (or deeper) skips end to end.
+    """
+    skipped = 0
+    frontier = [job.id]
+    while frontier:
+        dependent_ids = (
+            await db.execute(select(JobDependency.job_id).where(JobDependency.depends_on_job_id.in_(frontier)))
+        ).scalars().all()
+        frontier = []
+        for dep_id in dependent_ids:
+            dependent = (
+                await db.execute(select(Job).where(Job.id == dep_id).with_for_update())
+            ).scalar_one_or_none()
+            if dependent is None or dependent.status != JobStatus.BLOCKED:
+                continue
+            dependent.status = JobStatus.CANCELLED
+            db.add(JobLog(job_id=dep_id, level=LogLevel.WARNING, message=reason))
+            skipped += 1
+            frontier.append(dep_id)
+    await db.flush()
+    return skipped
 
 
 async def fail_execution(
@@ -279,6 +381,7 @@ async def fail_execution(
             payload_snapshot=job.payload,
         ))
         db.add(JobLog(job_id=job.id, level=LogLevel.ERROR, message="Max retries exhausted; moved to dead letter queue"))
+        await _skip_dependents(db, job, f"Skipped: upstream job #{job.id} dead-lettered")
     else:
         delay = compute_retry_delay_seconds(strategy, job.attempt_count, base_delay, multiplier, max_delay)
         job.status = JobStatus.RETRYING

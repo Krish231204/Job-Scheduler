@@ -59,6 +59,11 @@ class JobType(str, enum.Enum):
 class JobStatus(str, enum.Enum):
     QUEUED = "queued"
     SCHEDULED = "scheduled"
+    # Waiting on job dependencies (see JobDependency): not claimable until
+    # every parent job reaches COMPLETED. Promoted to QUEUED by
+    # job_service._promote_dependents, or CANCELLED if a parent fails
+    # terminally.
+    BLOCKED = "blocked"
     CLAIMED = "claimed"
     RUNNING = "running"
     COMPLETED = "completed"
@@ -273,6 +278,11 @@ class Job(Base):
         Enum(RetryStrategy, name="retry_strategy_override", values_callable=_enum_values), nullable=True
     )
 
+    # Per-execution wall-clock limit. The worker cancels the handler after
+    # this many seconds and records the attempt as failed, feeding the
+    # normal retry/dead-letter path. NULL = no limit (pre-existing behavior).
+    timeout_seconds: Mapped[float | None] = mapped_column(Float, nullable=True)
+
     attempt_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     next_retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
@@ -309,6 +319,23 @@ class Job(Base):
             postgresql_where=text("idempotency_key IS NOT NULL AND status <> 'cancelled'"),
         ),
     )
+
+
+class JobDependency(Base):
+    """Directed edge in the job DAG: `job_id` cannot run until
+    `depends_on_job_id` has COMPLETED. A job with any unmet edge sits in
+    status BLOCKED; if a parent dead-letters or is cancelled, the whole
+    downstream subtree is skipped (CANCELLED) rather than left blocked
+    forever. Both FKs cascade so deleting a job removes its edges.
+    """
+    __tablename__ = "job_dependencies"
+    __table_args__ = (
+        UniqueConstraint("job_id", "depends_on_job_id", name="uq_job_dependency"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    job_id: Mapped[int] = mapped_column(ForeignKey("jobs.id", ondelete="CASCADE"), index=True)
+    depends_on_job_id: Mapped[int] = mapped_column(ForeignKey("jobs.id", ondelete="CASCADE"), index=True)
 
 
 class JobExecution(Base):
@@ -366,6 +393,118 @@ class DeadLetterEntry(Base):
     ai_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     job: Mapped["Job"] = relationship(back_populates="dlq_entry")
+
+
+# --------------------------------------------------------------------------
+# Watches (the watcher application built on top of the scheduler)
+# --------------------------------------------------------------------------
+
+class WatchKind(str, enum.Enum):
+    DOWN = "down"                      # alert when the endpoint errors or returns >= 400
+    KEYWORD = "keyword"                # alert when the keyword appears in the page
+    CONTENT_CHANGE = "content_change"  # alert when the page content hash changes
+
+
+class WatchState(str, enum.Enum):
+    UNKNOWN = "unknown"       # no successful check yet
+    OK = "ok"                 # condition not met at last check
+    TRIGGERED = "triggered"   # condition met at last check
+    BROKEN = "broken"         # checks themselves keep failing; watch deactivated
+
+
+class CheckOutcome(str, enum.Enum):
+    OK = "ok"                 # fetched, condition not met
+    TRIGGERED = "triggered"   # fetched, condition met
+    ERROR = "error"           # the check itself failed (network, robots, ...)
+
+
+class WatchAlertKind(str, enum.Enum):
+    TRIGGERED = "triggered"   # ok/unknown -> triggered
+    RECOVERED = "recovered"   # triggered -> ok
+    BROKEN = "broken"         # checks repeatedly failing; watch deactivated
+
+
+class Watch(Base):
+    """A user-registered URL + condition, checked on an interval by
+    materializing a fetch -> diff -> notify job DAG into the owning
+    organization's watch queue (see app/services/watch_service.py).
+    Tenancy is org-level: members see only their org's watches.
+    """
+    __tablename__ = "watches"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    organization_id: Mapped[int] = mapped_column(ForeignKey("organizations.id", ondelete="CASCADE"), index=True)
+    queue_id: Mapped[int] = mapped_column(ForeignKey("queues.id", ondelete="CASCADE"), index=True)
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    url: Mapped[str] = mapped_column(String(2000), nullable=False)
+    kind: Mapped[WatchKind] = mapped_column(Enum(WatchKind, name="watch_kind", values_callable=_enum_values), nullable=False)
+    keyword: Mapped[str | None] = mapped_column(String(255), nullable=True)  # for kind=keyword
+    interval_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=300)
+    webhook_url: Mapped[str | None] = mapped_column(String(2000), nullable=True)
+
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    state: Mapped[WatchState] = mapped_column(
+        Enum(WatchState, name="watch_state", values_callable=_enum_values),
+        default=WatchState.UNKNOWN, nullable=False,
+    )
+    # Consecutive ticks whose fetch dead-lettered; at
+    # BROKEN_AFTER_CONSECUTIVE_FAILURES the watch flips to BROKEN and is
+    # deactivated (see watch_service.materialize_due_watches).
+    consecutive_failures: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    # The fetch job of the most recent tick, so the next tick can see
+    # whether it dead-lettered.
+    last_fetch_job_id: Mapped[int | None] = mapped_column(ForeignKey("jobs.id", ondelete="SET NULL"), nullable=True)
+
+    last_check_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    next_check_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        CheckConstraint("interval_seconds >= 60", name="ck_watch_interval_min"),
+    )
+
+
+class WatchCheck(Base):
+    """One executed check of a watch (one tick of the fetch->diff pipeline)."""
+    __tablename__ = "watch_checks"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    watch_id: Mapped[int] = mapped_column(ForeignKey("watches.id", ondelete="CASCADE"), index=True)
+    fetch_job_id: Mapped[int | None] = mapped_column(ForeignKey("jobs.id", ondelete="SET NULL"), nullable=True)
+
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    http_status: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    outcome: Mapped[CheckOutcome | None] = mapped_column(
+        Enum(CheckOutcome, name="check_outcome", values_callable=_enum_values), nullable=True
+    )
+    detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    __table_args__ = (
+        Index("ix_watch_checks_history", "watch_id", "started_at"),
+    )
+
+
+class WatchAlert(Base):
+    """A state-transition alert for a watch. Idempotent by construction:
+    `dedupe_key` is unique, and alerts are only created on transitions
+    (ok->triggered, triggered->ok, ->broken), so a condition that stays
+    triggered for fifty consecutive checks produces exactly one alert.
+    """
+    __tablename__ = "watch_alerts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    watch_id: Mapped[int] = mapped_column(ForeignKey("watches.id", ondelete="CASCADE"), index=True)
+    check_id: Mapped[int | None] = mapped_column(ForeignKey("watch_checks.id", ondelete="SET NULL"), nullable=True)
+    kind: Mapped[WatchAlertKind] = mapped_column(Enum(WatchAlertKind, name="watch_alert_kind", values_callable=_enum_values), nullable=False)
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    dedupe_key: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
+    delivered: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    delivery_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
 
 
 # --------------------------------------------------------------------------
