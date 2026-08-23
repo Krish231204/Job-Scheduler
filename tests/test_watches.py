@@ -15,13 +15,11 @@ from sqlalchemy import select
 
 import worker.watch_handlers as wh
 from app.models import (
-    CheckOutcome,
     Job,
     JobDependency,
     JobStatus,
     Organization,
     Project,
-    Queue,
     Watch,
     WatchAlert,
     WatchAlertKind,
