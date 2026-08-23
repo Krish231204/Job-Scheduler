@@ -110,6 +110,7 @@ class QueueStats(BaseModel):
     queue_id: int
     queued: int
     scheduled: int
+    blocked: int = 0
     claimed: int
     running: int
     completed: int
@@ -151,6 +152,12 @@ class JobCreate(BaseModel):
     max_retries: int | None = Field(default=None, ge=0, le=50)
     retry_strategy: RetryStrategy | None = None
 
+    # DAG: ids of jobs (same queue) that must COMPLETE before this one runs.
+    depends_on: list[int] | None = Field(default=None, max_length=50)
+    # Per-execution wall-clock limit; the worker cancels the handler and
+    # fails the attempt into the normal retry path when exceeded.
+    timeout_seconds: float | None = Field(default=None, gt=0, le=86400)
+
     @model_validator(mode="after")
     def validate_type_fields(self) -> "JobCreate":
         if self.job_type == JobType.DELAYED and self.delay_seconds is None:
@@ -161,6 +168,8 @@ class JobCreate(BaseModel):
             raise ValueError("cron_expression is required for recurring jobs")
         if self.job_type == JobType.BATCH and not self.batch_items:
             raise ValueError("batch_items (non-empty list) is required for batch jobs")
+        if self.job_type == JobType.BATCH and self.depends_on:
+            raise ValueError("depends_on is not supported for batch jobs")
         return self
 
 
@@ -175,6 +184,7 @@ class JobOut(BaseModel):
     payload: dict[str, Any]
     priority: int | None
     run_at: datetime
+    timeout_seconds: float | None = None
     attempt_count: int
     next_retry_at: datetime | None
     claimed_by: int | None

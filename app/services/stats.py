@@ -81,6 +81,7 @@ async def queue_stats(db: AsyncSession, queue_id: int) -> dict:
         "queue_id": queue_id,
         "queued": counts.get("queued", 0),
         "scheduled": counts.get("scheduled", 0),
+        "blocked": counts.get("blocked", 0),
         "claimed": counts.get("claimed", 0),
         "running": counts.get("running", 0),
         "completed": counts.get("completed", 0),
