@@ -19,7 +19,12 @@ from app.schemas import (
     ScheduledJobOut,
 )
 from app.services.ai_summary import summarize_failure
-from app.services.job_service import compute_initial_next_run, create_batch, create_job
+from app.services.job_service import (
+    _skip_dependents,
+    compute_initial_next_run,
+    create_batch,
+    create_job,
+)
 
 logger = logging.getLogger("jobsched.api.jobs")
 router = APIRouter(tags=["jobs"])
@@ -57,19 +62,24 @@ async def submit_job(
             detail="Use POST /queues/{queue_id}/scheduled-jobs with is_recurring=true for recurring jobs",
         )
 
-    job = await create_job(
-        db,
-        queue,
-        name=payload.name,
-        job_type=payload.job_type,
-        payload=payload.payload,
-        priority=payload.priority,
-        idempotency_key=payload.idempotency_key,
-        delay_seconds=payload.delay_seconds,
-        run_at=payload.run_at,
-        max_retries=payload.max_retries,
-        retry_strategy=payload.retry_strategy,
-    )
+    try:
+        job = await create_job(
+            db,
+            queue,
+            name=payload.name,
+            job_type=payload.job_type,
+            payload=payload.payload,
+            priority=payload.priority,
+            idempotency_key=payload.idempotency_key,
+            delay_seconds=payload.delay_seconds,
+            run_at=payload.run_at,
+            max_retries=payload.max_retries,
+            retry_strategy=payload.retry_strategy,
+            depends_on=payload.depends_on,
+            timeout_seconds=payload.timeout_seconds,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     await db.commit()
     await db.refresh(job)
     logger.info("Job submitted id=%s queue=%s type=%s name=%r", job.id, queue.id, job.job_type.value, job.name)
@@ -131,6 +141,9 @@ async def cancel_job(db: AsyncSession = Depends(get_db), job: Job = Depends(get_
     if job.status in (JobStatus.RUNNING, JobStatus.COMPLETED):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Cannot cancel job in status {job.status}")
     job.status = JobStatus.CANCELLED
+    # A cancelled job can never complete, so anything blocked on it would
+    # be stranded -- skip its downstream subtree along with it.
+    await _skip_dependents(db, job, f"Skipped: upstream job #{job.id} was cancelled")
     await db.commit()
     await db.refresh(job)
     logger.info("Job cancelled id=%s", job.id)

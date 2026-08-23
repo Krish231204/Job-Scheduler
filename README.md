@@ -1,10 +1,16 @@
-# Job Scheduler
+# Job Scheduler + Watches
 
 A production-inspired platform for reliably executing asynchronous background
-jobs across multiple workers: queues with priority/concurrency/retry config,
-immediate/delayed/scheduled/recurring/batch job submission, an atomic-claim
-worker pool, retries with configurable backoff, a dead letter queue, and a
-server-rendered dashboard.
+jobs across multiple workers — queues with priority/concurrency/retry config,
+immediate/delayed/scheduled/recurring/batch submission and **DAG
+dependencies**, an atomic-claim worker pool, retries with configurable
+backoff, per-job execution timeouts, a dead letter queue, and a
+server-rendered live dashboard — **plus a real application built on it:
+Watches**, a multi-tenant URL watcher. Register a URL and a condition
+(endpoint down / keyword appears / content changes) and the scheduler runs
+each check as a fetch → diff → notify job pipeline, with retries,
+transition-based idempotent alerting, and automatic dead-lettering of
+permanently broken targets.
 
 Stack: **FastAPI + SQLAlchemy (async) + PostgreSQL** for the API, a
 **separate async worker process** for execution, a **separate scheduler
@@ -15,9 +21,10 @@ for the dashboard.
 > since — a security/hardening pass (org-scoped authorization, RBAC on queue
 > config, rate limiting, liveness/readiness split), WebSocket live updates
 > across the whole dashboard, a visual redesign with dark mode, throughput/
-> latency metrics with a reproducible benchmark (see "Performance" below),
+> latency metrics with reproducible benchmarks (see "Performance" below),
 > a production deployment path for AWS EC2
-> ([docs/DEPLOY_EC2.md](docs/DEPLOY_EC2.md)), AI-generated dead-letter
+> ([docs/DEPLOY_EC2.md](docs/DEPLOY_EC2.md)), job DAG dependencies and
+> execution timeouts, the Watches application, AI-generated dead-letter
 > failure summaries, and CI with linting plus dependency vulnerability
 > scanning. See
 > [docs/DESIGN_DECISIONS.md](docs/DESIGN_DECISIONS.md) for what changed and
@@ -28,14 +35,16 @@ for the dashboard.
 
 ```
 app/                  FastAPI app: routers, models, schemas, services
-  routers/            auth, organizations, projects, queues, jobs, workers, dashboard
-  services/           job_service.py (state machine), retry.py, stats.py
+  routers/            auth, organizations, projects, queues, jobs, watches, workers, dashboard
+  services/           job_service.py (state machine + DAG), watch_service.py,
+                      url_safety.py (SSRF guard), retry.py, stats.py
   models.py           SQLAlchemy ORM models (see docs/ER_DIAGRAM.md)
 worker/               Worker process: polls, claims, executes, heartbeats
-scheduler/            Scheduler process: cron/delay promotion, stale-worker recovery
+  watch_handlers.py   fetch/diff/notify handlers (robots, rate limits, SSRF guard)
+scheduler/            Scheduler process: cron/delay promotion, watch ticks, stale-worker recovery
 templates/, static/   Server-rendered dashboard (Jinja2; light/dark, live over WebSockets)
 migrations/           Alembic migrations
-scripts/              seed.py (demo data), benchmark.py (see "Performance")
+scripts/              seed.py (demo data), benchmark.py + watch_soak.py (see "Performance")
 deploy/               Caddyfile for the optional HTTPS profile
 tests/                Pytest suite (see "Testing" below)
 docs/                 Architecture, ER diagram, design decisions, EC2 deploy guide
@@ -126,6 +135,43 @@ curl -X POST localhost:8000/queues/1/jobs -H "Authorization: Bearer $TOKEN" -H "
    full-page refreshes and no client-side templates. The dashboard
    follows your OS light/dark preference, with a topbar toggle.
 
+Jobs can also form a **DAG**: pass `depends_on: [job_ids]` and the job is
+created `blocked`, runs only after every parent completes, and is skipped
+(cancelled, with a log line saying why) if a parent dead-letters or is
+cancelled. `timeout_seconds` puts a wall-clock limit on each execution
+attempt — the worker cancels the handler and the attempt fails into the
+normal retry path.
+
+## Watches: the URL watcher built on the scheduler
+
+`/dashboard/watches` is a complete multi-tenant application running on the
+scheduler above. Register a URL, pick a condition and an interval, and the
+scheduler materializes a **fetch → diff → notify job DAG** per check:
+
+- **Conditions:** *endpoint down* (network error or HTTP ≥ 400), *keyword
+  appears*, or *content changes* (whitespace-normalized SHA-256 of the
+  body vs. the previous check).
+- **Alerting is transition-based and idempotent:** one alert when a watch
+  flips to triggered, one when it recovers — never one per check — and a
+  unique dedupe key makes retries unable to duplicate them. Alerts show
+  on the dashboard and optionally POST to a webhook.
+- **Broken targets dead-letter themselves:** fetch failures retry per the
+  watch queue's policy; a tick whose fetch dead-letters increments a
+  failure streak, and three consecutive failed ticks mark the watch
+  `broken`, deactivate it, and emit a final alert. Resuming clears the
+  slate.
+- **Polite and safe fetching:** robots.txt honored (cached per origin),
+  per-domain rate limiting, bounded redirects and response sizes, and an
+  SSRF guard — http/https only, port allowlist, and every resolved
+  address must be public, so a watch can't probe the private network or
+  the EC2 metadata service.
+- **Live dashboard:** per-watch check history, 24h ok-rate and p50/p95
+  check latency, and a live latency chart with outcome-colored points.
+
+Each organization gets an auto-provisioned "Watches" project and
+`watch-checks` queue, so all watch traffic is visible in the normal queue
+dashboard, with the same retry/DLQ machinery as any other job.
+
 Jobs run through the built-in demo handler (`worker/handlers.py`) unless you
 register a real one by name. The demo handler simulates work and can be told
 to fail via `payload.simulate = "fail"` or `"flaky"` — handy for watching the
@@ -180,6 +226,24 @@ raise it — a deliberate measurement of the framework's own cost per job.
 without — i.e. the partial unique index plus duplicate-check fast path
 (migration 0003) costs about a third of raw submission throughput, which
 is the price of exactly-one-job-per-key under concurrency.
+
+**Watcher soak** (`scripts/watch_soak.py`): the full watcher pipeline —
+scheduler materialization → fetch/diff/notify DAG → real worker
+execution — against a deterministic local target, with tick cadence
+accelerated so each watch re-checks as soon as its previous tick's DAG
+finishes (acceleration changes how often checks run, not what each check
+costs; latency percentiles are honest per-check numbers). 12 watches
+across all three condition types, 90 s, same 4-vCPU container:
+
+| Pool | Checks executed | Sustained rate | Check latency p50 / p95 / p99 |
+|---|---|---|---|
+| 1 worker × 8 | 1,124 (3,360 DAG jobs) | 12.5 checks/s | 21 / 33 / 37 ms |
+| 2 workers × 8 | 1,634 (4,882 DAG jobs) | 18.1 checks/s | 22 / 29 / 68 ms |
+
+Check latency covers the full guarded fetch: SSRF resolution check,
+robots lookup (cached), and the HTTP round trip. At real-world intervals
+(≥ 1 minute) a single t3.micro worker therefore has ~60× headroom over a
+hundred active watches.
 
 ## Operations
 
@@ -236,7 +300,9 @@ maximizing a percentage.
 **Verification status:** this has been run end-to-end against real
 Postgres -- registration, job submission (immediate + a
 deliberately-failing job to watch the retry/dead-letter path), live
-dashboard updates in a real browser, and the full `pytest` suite (36/36
+dashboard updates in a real browser, live watches exercised end to end
+against a local target (all three condition types, transitions, alerts,
+rate limiting), and the full `pytest` suite (54/54
 passing on Python 3.11 and 3.13, including the concurrent-claim and
 concurrent-idempotency tests) all confirmed working. A few real bugs
 turned up only once it was actually executed (an enum serialization

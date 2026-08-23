@@ -45,6 +45,8 @@
     /* Chart series (status-semantic: completed / dead-lettered) */
     --chart-good: #0ca30c;
     --chart-critical: #d03b3b;
+    --chart-series: #2a78d6;
+    --chart-warn: #fab219;
     --chart-grid: #e1e0d9;
     --chart-tick: #898781;
 
@@ -84,6 +86,8 @@
 
         --chart-good: #0ca30c;
         --chart-critical: #d03b3b;
+        --chart-series: #3987e5;
+        --chart-warn: #fab219;
         --chart-grid: #2c2c2a;
         --chart-tick: #898781;
 
@@ -117,6 +121,8 @@
 
     --chart-good: #0ca30c;
     --chart-critical: #d03b3b;
+    --chart-series: #3987e5;
+    --chart-warn: #fab219;
     --chart-grid: #2c2c2a;
     --chart-tick: #898781;
 
@@ -336,10 +342,10 @@ pre { white-space: pre-wrap; word-break: break-word; margin: 0; }
     background: var(--panel-inset);
     color: var(--text-secondary);
 }
-.status-completed, .status-succeeded, .status-online { background: var(--ok-bg); color: var(--ok); }
-.status-failed, .status-dead_letter, .status-offline { background: var(--err-bg); color: var(--err); }
-.status-running, .status-claimed, .status-draining, .status-retrying { background: var(--warn-bg); color: var(--warn); }
-.status-queued, .status-scheduled, .status-cancelled { background: var(--panel-inset); color: var(--text-secondary); }
+.status-completed, .status-succeeded, .status-online, .status-ok { background: var(--ok-bg); color: var(--ok); }
+.status-failed, .status-dead_letter, .status-offline, .status-triggered, .status-broken { background: var(--err-bg); color: var(--err); }
+.status-running, .status-claimed, .status-draining, .status-retrying, .status-error { background: var(--warn-bg); color: var(--warn); }
+.status-queued, .status-scheduled, .status-blocked, .status-cancelled, .status-unknown { background: var(--panel-inset); color: var(--text-secondary); }
 
 /* The signature: every live-updating region announces itself with a
    pulsing dot. Hidden until its WebSocket actually connects. */

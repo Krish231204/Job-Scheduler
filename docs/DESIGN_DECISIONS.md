@@ -503,9 +503,10 @@ automatically.
 
 Of the assignment's bonus list, rate limiting, WebSocket live updates (now
 the whole dashboard -- see above), RBAC (queue-config actions require
-owner/admin -- see the hardening-pass section above), and AI-generated
-failure summaries are now implemented. Still out of scope: workflow
-dependencies (job B waits on job A), distributed locking beyond
+owner/admin -- see the hardening-pass section above), workflow
+dependencies (job B waits on job A -- the job DAG, see the watcher pass
+below), and AI-generated failure summaries are now implemented. Still out
+of scope: distributed locking beyond
 `SKIP LOCKED`, queue sharding, and a full RBAC permission matrix beyond
 queue-config actions (e.g. there's no endpoint to invite/manage org
 members, or to change another member's role). These were cut to prioritize
@@ -570,6 +571,62 @@ with `ENVIRONMENT=production` the session cookie is `Secure`, so on a
 bare-IP HTTP deployment dashboard login silently fails -- `COOKIE_SECURE`
 now exists as an explicit, documented opt-out rather than an undocumented
 footgun (secure-by-default is unchanged).
+
+## Watcher pass (2026-08-23): DAG, timeouts, and a real application
+
+The platform's honest weakness was that nothing *used* it. This pass adds
+the missing core capabilities and then builds a complete application --
+Watches, a multi-tenant URL watcher -- on top of them, so every scheduler
+feature has a visible job to do.
+
+**Job DAG (`job_dependencies` + `blocked` status).** A job created with
+`depends_on` sits in `blocked`, which the claim query never selects (it
+claims only queued/scheduled -- no claim-path change, no new hot-path
+cost). Promotion runs inside `complete_execution` and locks the dependent
+row with a *waiting* FOR UPDATE, not SKIP LOCKED: when two parents of the
+same child complete concurrently, each transaction's snapshot can miss
+the other's uncommitted COMPLETED, and serializing on the child row
+forces the second completer to re-read parent statuses after the first
+commits -- exactly one of them promotes. The failure direction is just as
+deliberate: a dead-lettered or cancelled parent cancels its entire
+blocked subtree immediately (BFS), because a blocked job whose parent can
+never complete is otherwise stranded forever.
+
+**Per-execution timeouts.** `asyncio.wait_for` around the handler; a
+timed-out attempt fails into the ordinary retry/dead-letter path with a
+readable error. Deliberately per-attempt (not per-job): a timeout is a
+kind of failure, and the retry policy already owns failure semantics.
+
+**Watches.** Each due watch materializes fetch -> diff -> notify as a
+DAG in an auto-provisioned per-org queue. Design points worth recording:
+
+- *Failure semantics are the scheduler's, not reimplemented.* Fetch
+  errors retry per the queue's retry policy; when a tick's fetch
+  dead-letters, the DAG skip cascade cancels its diff/notify; three
+  consecutive dead-lettered ticks mark the watch `broken` and deactivate
+  it (with one idempotent alert). Network errors are *data* for
+  `down` watches (unreachable is the condition) and transient failures
+  for the others.
+- *Alerting is transition-based and idempotent by construction.* Alerts
+  are only created on state transitions, and a unique dedupe key means
+  retries and races cannot duplicate one. Delivery (webhook) is a
+  separate `notify` job: the delivered flag only flips on success, so a
+  failed delivery is retried by this tick and caught up by the next.
+- *SSRF is the threat model.* A multi-tenant fetcher is an SSRF vector
+  by construction (EC2 metadata service, private network). The guard
+  allowlists scheme/port and requires every resolved address to be
+  public, re-checked per redirect hop and for webhook targets. Accepted
+  residuals, documented rather than hidden: the resolve-then-connect
+  TOCTOU (DNS rebinding) and the per-process-only domain rate limit.
+  `WATCH_ALLOW_PRIVATE_TARGETS` exists as an explicit dev/soak-only
+  escape hatch and is loudly marked as such.
+- *Politeness:* robots.txt honored with a per-origin TTL cache (non-200
+  robots responses treated as no-policy, the common convention),
+  per-domain minimum fetch spacing, bounded redirects and body reads.
+
+`scripts/watch_soak.py` runs the whole pipeline against a deterministic
+local target and prints checks executed and per-check latency
+percentiles; measured numbers live in the README's Performance section.
 
 ## Verification history
 
