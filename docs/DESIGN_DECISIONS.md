@@ -668,3 +668,31 @@ in `dead_letter` → retry it from the dashboard) and by the automated suite
 concurrent-claim test proving no two workers ever claim the same job under
 real contention). This is the strongest evidence available short of a
 second engineer's independent review.
+
+## Production find (2026-08-24): the rate limiter was billing redirect hops
+
+The first real watch (a `down` watch on an external production site,
+checked every 5 minutes from the EC2 deployment) produced 24 hours of
+checks whose latency was implausibly *constant*: p50 10,175 ms, p95
+10,354 ms, every single check within ~200 ms of the same value. A real
+site's latency doesn't look like that — but `10 s + ~175 ms` does, when
+you notice the per-domain rate limit is 10 s.
+
+Root cause: the target answers its root URL with a same-host redirect,
+and `fetch_url_checked` applied `_respect_domain_rate_limit` on **every
+hop** of the redirect chain. Hop 1 recorded the domain's fetch timestamp;
+hop 2, microseconds later, dutifully slept out the remaining ~9.8 s of
+the interval — inside the measured check window. The limiter exists to
+space out *checks* against a domain, not the hops of one logical fetch
+(browsers don't pause between redirects either). Fix: a chain now charges
+the limiter once per host (`worker/watch_handlers.py`), with a regression
+test that fetches through a same-host redirect under a deliberately large
+interval and asserts the elapsed time stays far below it. After deploying
+the fix, the same watch's checks dropped from ~10,200 ms to ~600 ms.
+
+Two lessons worth recording. First, the soak benchmark never caught this
+because its local targets don't redirect — synthetic coverage inherits
+the shape of the traffic you imagined. Second, this is exactly what
+dogfooding is for: a monitoring tool whose latency numbers nobody
+compares against reality will happily report nonsense forever. The
+implausible *consistency* of the number was the tell, not its size.

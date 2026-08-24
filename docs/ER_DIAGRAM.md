@@ -17,6 +17,14 @@ erDiagram
     WORKERS ||--o{ JOBS : claims
     WORKERS ||--o{ JOB_EXECUTIONS : runs
     WORKERS ||--o{ WORKER_HEARTBEATS : sends
+    JOBS ||--o{ JOB_DEPENDENCIES : "blocked by (job_id)"
+    JOBS ||--o{ JOB_DEPENDENCIES : "unblocks (depends_on_job_id)"
+    ORGANIZATIONS ||--o{ WATCHES : owns
+    QUEUES ||--o{ WATCHES : "checks run in"
+    WATCHES ||--o{ WATCH_CHECKS : records
+    WATCHES ||--o{ WATCH_ALERTS : raises
+    WATCH_CHECKS ||--o{ WATCH_ALERTS : "evidence for"
+    JOBS ||--o| WATCH_CHECKS : "fetch job produced"
 
     USERS {
         int id PK
@@ -70,11 +78,12 @@ erDiagram
         int scheduled_job_id FK
         string batch_id
         enum job_type "immediate/delayed/scheduled/recurring/batch"
-        enum status "queued/scheduled/claimed/running/completed/failed/retrying/dead_letter/cancelled"
+        enum status "queued/scheduled/blocked/claimed/running/completed/failed/retrying/dead_letter/cancelled"
         json payload
         datetime run_at
         int attempt_count
         string idempotency_key
+        float timeout_seconds
         int claimed_by FK
     }
     JOB_EXECUTIONS {
@@ -112,6 +121,49 @@ erDiagram
         int worker_id FK
         datetime timestamp
         int active_job_count
+    }
+    JOB_DEPENDENCIES {
+        int id PK
+        int job_id FK
+        int depends_on_job_id FK
+    }
+    WATCHES {
+        int id PK
+        int organization_id FK
+        int queue_id FK
+        string name
+        string url
+        enum kind "down/keyword/content_change"
+        string keyword
+        int interval_seconds
+        string webhook_url
+        enum state "unknown/ok/triggered/broken"
+        bool is_active
+        int consecutive_failures
+        int last_fetch_job_id FK
+        datetime next_check_at
+    }
+    WATCH_CHECKS {
+        int id PK
+        int watch_id FK
+        int fetch_job_id FK
+        datetime started_at
+        int latency_ms
+        int http_status
+        string content_hash
+        bool keyword_found
+        enum outcome "ok/triggered/error"
+        string detail
+    }
+    WATCH_ALERTS {
+        int id PK
+        int watch_id FK
+        int check_id FK
+        enum kind "triggered/recovered/broken"
+        string message
+        string dedupe_key UK
+        bool delivered
+        string delivery_detail
     }
 ```
 
@@ -176,8 +228,7 @@ explicit entity list.
 
 ## Additions from the watcher pass (2026-08-23)
 
-New tables (not yet in the rendered diagram above — the Mermaid/PNG shows
-the pre-watcher schema):
+New tables (included in the diagram above):
 
 - `job_dependencies (job_id, depends_on_job_id)` — directed edges in the
   job DAG; both FKs cascade with the jobs. Unique per edge; indexed both

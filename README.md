@@ -321,7 +321,7 @@ Postgres -- registration, job submission (immediate + a
 deliberately-failing job to watch the retry/dead-letter path), live
 dashboard updates in a real browser, live watches exercised end to end
 against a local target (all three condition types, transitions, alerts,
-rate limiting), and the full `pytest` suite (54/54
+rate limiting), and the full `pytest` suite (55/55
 passing on Python 3.11 and 3.13, including the concurrent-claim and
 concurrent-idempotency tests) all confirmed working. A few real bugs
 turned up only once it was actually executed (an enum serialization
