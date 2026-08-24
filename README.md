@@ -1,5 +1,9 @@
 # Job Scheduler + Watches
 
+**Live:** [http://13.63.77.245/dashboard](http://13.63.77.245/dashboard) —
+running on AWS EC2 (eu-north-1), including a real watch monitoring
+[CortexOne](https://cortex-one-three.vercel.app) every 5 minutes.
+
 A production-inspired platform for reliably executing asynchronous background
 jobs across multiple workers — queues with priority/concurrency/retry config,
 immediate/delayed/scheduled/recurring/batch submission and **DAG
