@@ -10,7 +10,8 @@ Fetch etiquette and safety, in order of application:
    watch broken -- retrying a policy block is pointless.
 3. Per-domain rate limit: at most one fetch per host per
    DOMAIN_MIN_INTERVAL_SECONDS within this worker process, sleeping out
-   the remainder (bounded, watch intervals are >= 60s).
+   the remainder (bounded, watch intervals are >= 60s). A redirect chain
+   counts as one fetch per host -- hops are not individually limited.
 4. Response caps: bounded redirects (each hop re-guarded) and a bounded
    body read.
 
@@ -116,12 +117,18 @@ async def fetch_url_checked(url: str) -> tuple[int, str]:
     network-level failures."""
     async with httpx.AsyncClient(timeout=FETCH_TIMEOUT, follow_redirects=False, verify=_SSL_CONTEXT) as client:
         current = url
+        # The rate limit spaces out *checks*, not redirect hops: charge each
+        # host once per chain, or a same-host redirect (the common case)
+        # silently adds a full min-interval sleep to every check's latency.
+        waited_hosts: set[str] = set()
         for _ in range(MAX_REDIRECTS + 1):
             host = await ensure_public_url(current)
             scheme = current.split(":", 1)[0]
             if not await _robots_allows(client, current, scheme, host):
                 raise UrlPolicyError(f"policy: {current} is disallowed by robots.txt")
-            await _respect_domain_rate_limit(host)
+            if host not in waited_hosts:
+                await _respect_domain_rate_limit(host)
+                waited_hosts.add(host)
 
             async with client.stream("GET", current, headers={"User-Agent": USER_AGENT}) as resp:
                 if resp.status_code in (301, 302, 303, 307, 308) and resp.headers.get("location"):

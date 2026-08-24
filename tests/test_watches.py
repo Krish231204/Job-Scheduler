@@ -10,6 +10,8 @@ by scripts/watch_soak.py against a local server rather than unit-mocked.
 """
 from datetime import datetime, timedelta, timezone
 
+import time
+
 import pytest
 from sqlalchemy import select
 
@@ -262,3 +264,63 @@ def test_url_syntax_guard():
 async def test_resolution_guard_blocks_localhost():
     with pytest.raises(UrlPolicyError):
         await ensure_public_url("http://localhost/")
+
+
+# ------------------------------------------------------------------
+# Fetch etiquette
+# ------------------------------------------------------------------
+
+async def test_redirect_chain_pays_domain_rate_limit_once(monkeypatch):
+    """Found in production: a same-host redirect made every check sleep out
+    the full per-domain interval (the limiter treated hop 2 as a new fetch),
+    so p50 latency read as min_interval + real RTT. A chain must be charged
+    once per host."""
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path == "/start":
+                self.send_response(302)
+                self.send_header("Location", "/end")
+                self.end_headers()
+            else:
+                body = b"arrived"
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+        def log_message(self, *args):  # keep test output quiet
+            pass
+
+    # The port allowlist applies even with private targets allowed, so the
+    # server must sit on an allowed port.
+    server = port = None
+    for candidate in (8080, 8000, 8443):
+        try:
+            server = ThreadingHTTPServer(("127.0.0.1", candidate), Handler)
+            port = candidate
+            break
+        except OSError:
+            continue
+    if server is None:
+        pytest.skip("no allowed port free for local test server")
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+
+    settings = wh.get_settings()
+    monkeypatch.setattr(settings, "watch_allow_private_targets", True)
+    monkeypatch.setattr(settings, "watch_domain_min_interval_seconds", 30.0)
+    # This process may have fetched from 127.0.0.1 before (other tests /
+    # reused workers); a stale timestamp would make even the first hop wait.
+    monkeypatch.setattr(wh, "_domain_last_fetch", {})
+
+    try:
+        t0 = time.monotonic()
+        status, text = await wh.fetch_url_checked(f"http://127.0.0.1:{port}/start")
+        elapsed = time.monotonic() - t0
+    finally:
+        server.shutdown()
+
+    assert (status, text) == (200, "arrived")
+    assert elapsed < 5.0, f"redirect hop was rate-limited: fetch took {elapsed:.1f}s"
