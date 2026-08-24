@@ -1,5 +1,9 @@
 # Job Scheduler + Watches
 
+**Live:** [http://13.63.77.245/dashboard](http://13.63.77.245/dashboard) —
+running on AWS EC2 (eu-north-1), including a real watch monitoring
+[CortexOne](https://cortex-one-three.vercel.app) every 5 minutes.
+
 A production-inspired platform for reliably executing asynchronous background
 jobs across multiple workers — queues with priority/concurrency/retry config,
 immediate/delayed/scheduled/recurring/batch submission and **DAG
@@ -248,14 +252,17 @@ hundred active watches.
 **Live production watch** (dogfooding): the EC2 deployment runs a real
 `down` watch every 5 minutes against
 [CortexOne](https://cortex-one-three.vercel.app), another of my deployed
-projects (Vercel + Neon Postgres). First live check (2026-08-23, from
-eu-north-1): HTTP 200 in **12,447 ms** — not the watcher being slow, but
-the watch catching CortexOne's full cold start (Neon suspends idle
-database compute; the first request pays the resume plus Vercel's
-function cold start, warm hits are a few hundred ms). Exactly the kind of
-behavior a latency-recording uptime watch exists to surface; the per-check
-history and 24h p50/p95 on the watch's dashboard page track it
-continuously.
+projects (Vercel + Neon Postgres). The first 24 hours of data — **242
+checks, 100% ok** — found a real bug, in the watcher itself: p50/p95 read
+**10,175 / 10,354 ms**, implausibly constant for a Vercel app. That
+constant is exactly the 10 s per-domain rate limit plus ~175 ms of actual
+round trip: CortexOne answers its root URL with a redirect, and the fetch
+loop was charging the domain limiter on *every hop*, so the second hop of
+each check slept out nearly the full interval inside the measured window.
+Fixed (a redirect chain now pays the limiter once per host, with a
+regression test) — which is the point of running your own monitoring on
+your own targets: an uptime tool whose latency numbers you never compare
+against reality will happily report nonsense forever.
 
 ## Operations
 
