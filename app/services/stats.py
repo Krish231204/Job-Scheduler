@@ -4,6 +4,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import CheckOutcome, ExecutionStatus, Job, JobExecution, JobStatus, WatchCheck
+from app.timefmt import display_tz, to_display
 
 # Window for the "current rate" metrics (jobs/sec, latency percentiles).
 # Long enough to smooth out poll-interval noise, short enough that the
@@ -149,7 +150,7 @@ async def watch_latency_series(db: AsyncSession, watch_id: int, limit: int = 50)
     ).all()
     rows.reverse()
     return {
-        "labels": [r[0].strftime("%H:%M:%S") for r in rows],
+        "labels": [to_display(r[0]).strftime("%H:%M:%S") for r in rows],
         "latency_ms": [r[1] for r in rows],
         "outcomes": [(r[2].value if r[2] else "error") for r in rows],
     }
@@ -162,7 +163,15 @@ async def queue_health_series(db: AsyncSession, queue_id: int, hours: int = 24) 
     Chart.js without any further transformation.
     """
     since = datetime.now(timezone.utc) - timedelta(hours=hours)
-    bucket = func.date_trunc("hour", Job.completed_at)
+    # Bucket on wall-clock hours in the display zone, so the chart's labels
+    # read 18:00, 19:00 ... rather than UTC hours shifted by +05:30.
+    # timezone(zone, timestamptz) yields a naive local timestamp in Postgres,
+    # which is why the keys below are naive local datetimes too. Zones with
+    # DST are best-effort on transition days; the default has none.
+    # display_tz() is the validated zone (falls back to UTC on a bad name), so
+    # the SQL side can never disagree with the Python keys built below.
+    tz_name = display_tz().key
+    bucket = func.date_trunc("hour", func.timezone(tz_name, Job.completed_at))
 
     result = await db.execute(
         select(bucket.label("hour"), Job.status, func.count(Job.id))
@@ -179,7 +188,7 @@ async def queue_health_series(db: AsyncSession, queue_id: int, hours: int = 24) 
         else:
             dead_letter_by_hour[hour] = count
 
-    now = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    now = datetime.now(display_tz()).replace(tzinfo=None, minute=0, second=0, microsecond=0)
     labels, completed, dead_lettered = [], [], []
     for i in range(hours - 1, -1, -1):
         hour = now - timedelta(hours=i)

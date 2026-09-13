@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.config import get_settings
+from app.timefmt import display_tz, format_ts
 from app.database import get_db
 from app.deps import get_job_for_user, get_project_for_user, get_queue_for_user, get_queue_role, get_watch_for_user
 from app.models import (
@@ -41,13 +42,14 @@ settings = get_settings()
 
 def _format_ts(value: datetime | None) -> str:
     """Compact, second-precision timestamp for the dashboard's data voice
-    (raw datetime repr drags microseconds + offset into every table cell)."""
-    if value is None:
-        return "–"
-    return value.strftime("%Y-%m-%d %H:%M:%S")
+    (raw datetime repr drags microseconds + offset into every table cell).
+    Rendered in ``settings.dashboard_timezone`` (default Asia/Kolkata);
+    storage stays UTC. See app/timefmt.py."""
+    return format_ts(value)
 
 
 templates.env.filters["ts"] = _format_ts
+templates.env.globals["display_tz"] = str(display_tz())
 
 
 def _set_session_cookie(response, token: str) -> None:
