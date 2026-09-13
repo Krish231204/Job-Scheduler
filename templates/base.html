@@ -35,6 +35,7 @@
             {% if user %}
             <form method="post" action="/logout" class="logout-form">
                 <span class="muted user-email">{{ user.email }}</span>
+                <span class="muted" title="All dashboard times are shown in this zone">{{ display_tz }}</span>
                 <button type="submit" class="button-secondary button-small">Log out</button>
             </form>
             {% endif %}

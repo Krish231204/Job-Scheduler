@@ -28,6 +28,10 @@ class Settings(BaseSettings):
     # opt-out, not a default; see docs/DEPLOY_EC2.md.
     cookie_secure: bool | None = None
 
+    # Time zone used to DISPLAY timestamps on the dashboard (IANA name, e.g.
+    # "Asia/Kolkata", "UTC"). Storage stays UTC; only rendering converts.
+    dashboard_timezone: str = "Asia/Kolkata"
+
     @property
     def effective_cookie_secure(self) -> bool:
         if self.cookie_secure is not None:
